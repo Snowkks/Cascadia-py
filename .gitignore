@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# Nix
+flake.nix
+flake.lock
+result
+result-*
+.direnv/
+
+# Conda
+*.conda
+conda-meta/
+
+# Game data
+data/cascadia.db
+saves/
+
+# IDE / editor
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.ropeproject/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+.Trash-*
+
+# Pytest
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Logs
+*.log
