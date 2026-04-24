@@ -20,8 +20,6 @@ ENV/
 .env/
 
 # Nix
-flake.nix
-flake.lock
 result
 result-*
 .direnv/
