@@ -232,7 +232,7 @@ class HexCell:
         if self.selected:
             border, bw = COLORS["selected"], 3
         elif self.highlight:
-            border, bw = (0, 128, 0), 3
+            border, bw = (0, 255, 0), 3
 
         draw_hex(surface, fill, self.cx, self.cy, self.size,
                  border_color=border, border_width=bw)
