@@ -138,6 +138,7 @@ The player with the most total points wins. Ties are broken by most nature token
 | Right-click + drag | Pan the board |
 | ESC | Return to menu |
 | Mouse wheel (log) | Scroll event log |
+| F11 | Fullscreen |
 
 ---
 
