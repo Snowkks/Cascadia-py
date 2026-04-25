@@ -11,7 +11,9 @@ from typing import Tuple, Optional, Callable, List
 from cascadia.constants import COLORS, HEX_SIZE
 from cascadia.utils import (bevel_rect, fill_bevel_rect, draw_hex,
                              draw_text, draw_circle_token, hex_corners, wrap_text)
-from cascadia.gui.resources import get_font, WILDLIFE_ASCII, HABITAT_LABELS
+from cascadia.gui.ui import font as get_font_raw
+from cascadia.gui.resources import WILDLIFE_ASCII, HABITAT_LABELS
+def get_font(size, bold=False, italic=False): return get_font_raw(size, bold)
 
 
 # ── Button ────────────────────────────────────────────────────────────────────

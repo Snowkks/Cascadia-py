@@ -1,97 +1,67 @@
 """
-screen_menu.py  –  Main menu.
+Menu screen - centred dialog, nothing overlapping.
 
-Window (centred, 300×260):
-  y+0   ┌─────────────────────────────┐  ← outer raised bevel
-  y+2   │▓▓▓▓▓ CASCADIA ▓▓▓▓▓▓▓▓▓▓▓▓│  ← title bar (24px)
-  y+26  ├─────────────────────────────┤
-  y+36  │   CASCADIA  (big text)      │
-  y+60  │   subtitle                  │
-  y+80  │──────────────────────────── │  ← separator
-  y+96  │  [ New Game ]               │
-  y+140 │  [ Leaderboard ]            │
-  y+184 │  [ Quit ]                   │
-  y+228 │  v1.0 text                  │
-  y+250 └─────────────────────────────┘
+Pixel layout (all from top of window):
+  Desktop fills 1280x800
+  Dialog: x=490, y=270, w=300, h=260
+    y+0  : raised border
+    y+2  : title bar h=22
+    y+24 : face begins
+    y+34 : "CASCADIA" big text
+    y+66 : subtitle
+    y+86 : hrule
+    y+100: btn New Game    h=34
+    y+142: btn Leaderboard h=34
+    y+184: btn Quit        h=34
+    y+226: version text
+    y+258: border end
 """
 import pygame
-from cascadia.constants import WINDOW_WIDTH as W, WINDOW_HEIGHT as H, COLORS
-from cascadia.utils import bevel_rect, fill_bevel_rect, draw_title_bar, draw_text
-from cascadia.gui.resources import get_font, get_title_font
-from cascadia.gui.widgets import Button
+from cascadia.constants import WINDOW_WIDTH as W, WINDOW_HEIGHT as H
+from cascadia.gui.ui import C, bevel, title_bar, hrule, txt, font, Button, panel_box
 
-WIN_W = 300
-WIN_H = 260
-TITLE_H = 24
+DX, DY, DW, DH = 490, 270, 300, 260
+TH = 22   # title bar height
 
 
 class MenuScreen:
     def __init__(self, on_new_game, on_leaderboard, on_quit):
-        # Window top-left
-        self._wx = (W - WIN_W) // 2
-        self._wy = (H - WIN_H) // 2
-        wx, wy = self._wx, self._wy
+        self._f_title = font(24, bold=True)
+        self._f_sub   = font(13)
+        self._f_ver   = font(11)
+        self._f_tb    = font(13, bold=True)
 
-        # Content starts below title bar + 2px bevel
-        cy = wy + 2 + TITLE_H   # = wy + 26
+        # Client area starts at DY+2+TH = DY+24
+        cy = DY + 2 + TH
+        bx = DX + (DW - 220) // 2   # centre buttons in dialog
 
-        self._tf  = get_title_font(16)
-        self._big = get_title_font(26)
-        self._sub = get_font(13)
-        self._sm  = get_font(12)
-
-        # Buttons — centred inside the window
-        bx = wx + (WIN_W - 220) // 2
-        bw, bh = 220, 34
         self._btns = [
-            Button(pygame.Rect(bx, cy + 70,  bw, bh), "New Game",    on_new_game),
-            Button(pygame.Rect(bx, cy + 114, bw, bh), "Leaderboard", on_leaderboard),
-            Button(pygame.Rect(bx, cy + 158, bw, bh), "Quit",        on_quit),
+            Button((bx, cy+76,  220, 42), "New Game",     on_new_game,    18, True),
+            Button((bx, cy+128, 220, 36), "Leaderboard",  on_leaderboard, 16),
+            Button((bx, cy+174, 220, 36), "Quit",         on_quit,        16),
         ]
 
-    def handle_event(self, event):
-        for b in self._btns: b.handle_event(event)
+    def handle_event(self, ev):
+        for b in self._btns: b.handle(ev)
 
-    def update(self, dt): pass
+    def update(self): pass
 
-    def draw(self, surface):
-        surface.fill(COLORS["bg_dark"])
-        wx, wy = self._wx, self._wy
+    def draw(self, surf):
+        surf.fill(C["desktop"])
 
-        # Outer window bevel + face
-        win_rect = pygame.Rect(wx, wy, WIN_W, WIN_H)
-        fill_bevel_rect(surface, win_rect, raised=True)
+        # Dialog box
+        dlg = pygame.Rect(DX, DY, DW, DH)
+        panel_box(surf, dlg)
+        tb  = pygame.Rect(DX+2, DY+2, DW-4, TH)
+        title_bar(surf, tb, "Cascadia", self._f_tb)
 
-        # Title bar
-        tb = pygame.Rect(wx + 2, wy + 2, WIN_W - 4, TITLE_H)
-        draw_title_bar(surface, tb, "Cascadia", self._tf)
+        # Client area
+        cy = DY + 2 + TH
+        cx = DX + DW // 2
+        txt(surf, "CASCADIA",       self._f_title, C["black"], cx, cy+10, cx=True)
+        txt(surf, "Pacific Northwest Wilderness", self._f_sub, C["muted"], cx, cy+46, cx=True)
+        hrule(surf, cy+66, DX+10, DX+DW-10)
 
-        # Client area background
-        client = pygame.Rect(wx + 2, wy + 2 + TITLE_H,
-                             WIN_W - 4, WIN_H - 4 - TITLE_H)
-        pygame.draw.rect(surface, COLORS["bg_panel"], client)
+        for b in self._btns: b.draw(surf)
 
-        # Content starts here
-        cy = wy + 2 + TITLE_H
-        cx = wx + WIN_W // 2
-
-        # Big title
-        draw_text(surface, "CASCADIA", self._big, COLORS["text_dark"],
-                  cx, cy + 10, align="center")
-        draw_text(surface, "Pacific Northwest Wilderness", self._sub,
-                  COLORS["text_muted"], cx, cy + 44, align="center")
-
-        # Separator
-        sep_y = cy + 64
-        pygame.draw.line(surface, COLORS["bevel_shadow"],
-                         (wx + 10, sep_y), (wx + WIN_W - 10, sep_y))
-        pygame.draw.line(surface, COLORS["bevel_light"],
-                         (wx + 10, sep_y + 1), (wx + WIN_W - 10, sep_y + 1))
-
-        # Buttons
-        for b in self._btns:
-            b.draw(surface)
-
-        # Version
-        draw_text(surface, "Digital Edition v1.0", self._sm,
-                  COLORS["text_muted"], cx, wy + WIN_H - 18, align="center")
+        txt(surf, "v1.0  Digital Edition", self._f_ver, C["muted"], cx, DY+DH-20, cx=True)

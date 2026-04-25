@@ -1,602 +1,522 @@
 """
-screen_game.py  –  Main gameplay screen.
+Game screen layout (1280x800, all absolute coordinates):
 
-Strict non-overlapping layout (all measurements in one place at the top):
-
-  y=0        ┌────────────────────────────────────────────────────┐
-             │  TITLE BAR  (TITLE_H px tall)                      │
-  y=TITLE_H  ├──────────┬─────────────────────────┬──────────────┤
-             │  LEFT    │        BOARD             │   RIGHT      │
-             │  LEFT_W  │  BOARD_W                 │   RIGHT_W    │
-             │          │  (fills remaining width) │              │
-  y=BOT      ├──────────┴─────────────────────────┴──────────────┤
-             │  STATUS BAR  (STATUS_H px tall)                    │
-  y=H        └────────────────────────────────────────────────────┘
+  x=0        x=220      x=1040     x=1280
+  │          │          │          │
+  │ LEFT     │  BOARD   │  RIGHT   │
+  │ 220px    │  820px   │  240px   │
+  │          │          │          │
+  y=0  ┌─────┬──────────┬──────────┐
+       │Title bar 26px             │
+  y=26 ├─────┼──────────┼──────────┤
+       │Plyr │          │ Market   │
+       │info │  Hex     │ 4 slots  │
+       │     │  board   │          │
+       │     │  (pan    │ Actions  │
+       │     │  RMB)    │          │
+       │     │          │ Log      │
+  y=774├─────┼──────────┼──────────┤
+       │ Status bar 26px           │
+  y=800└──────────────────────────-┘
 """
-
 import pygame
-from cascadia.constants import WINDOW_WIDTH as W, WINDOW_HEIGHT as H, COLORS, HEX_SIZE, MARKET_SIZE
+from cascadia.constants import (WINDOW_WIDTH as W, WINDOW_HEIGHT as H,
+                                 COLORS, HEX_SIZE, MARKET_SIZE)
 from cascadia.game_engine import GameEngine, Phase
-from cascadia.utils import bevel_rect, fill_bevel_rect, draw_title_bar, hex_to_pixel, pixel_to_hex, draw_text
-from cascadia.gui.resources import get_font, get_title_font, WILDLIFE_ASCII, HABITAT_LABELS
-from cascadia.gui.widgets import Button, GroupBox, HexCell, ScrollLog, Tooltip
+from cascadia.gui.ui import (C, bevel, title_bar, hrule, txt, font,
+                              Button, ScrollList, panel_box)
+from cascadia.gui.widgets import HexCell
+from cascadia.utils import hex_to_pixel, pixel_to_hex, draw_circle_token
 
-# ── Layout constants (single source of truth) ─────────────────────────────────
-TITLE_H  = 24          # title bar height
-STATUS_H = 20          # status bar height
-LEFT_W   = 200         # left panel width
-RIGHT_W  = 240         # right panel width
-CONTENT_TOP = TITLE_H         # y where content area starts
-CONTENT_BOT = H - STATUS_H    # y where content area ends
-CONTENT_H   = CONTENT_BOT - CONTENT_TOP
+# ── Layout constants ── (change these to tune, they won't overlap)
+TH   = 26          # title bar height
+STH  = 26          # status bar height
+LW   = 220         # left panel width
+RW   = 240         # right panel width
+BX   = LW          # board left edge
+BW   = W - LW - RW # board width  (= 820)
+BCX  = BX + BW//2  # board centre x
+BCY  = TH + (H - TH - STH)//2  # board centre y
 
-BOARD_X  = LEFT_W
-BOARD_W  = W - LEFT_W - RIGHT_W
-BOARD_CX = BOARD_X + BOARD_W // 2
-BOARD_CY = CONTENT_TOP + CONTENT_H // 2
+# Right panel x
+RX   = W - RW
 
-# Right panel x origin
-RP_X = W - RIGHT_W
-# Pad inside panels
-PAD = 6
+# Market slots: 4 rows inside right panel
+# Each slot: tile card left, token chip right
+MK_X     = RX + 6
+MK_TW    = RW - 72   # tile card width
+MK_TOK_X = RX + RW - 60  # token chip x
+MK_TOK_W = 54
+MK_SLOT_H= 68        # height of each market row
+MK_TOP   = TH + 36  # first slot y (below "Market" header)
 
-# Market: 4 slots stacked vertically inside right panel
-MK_HEADER_H = 22          # "Market" label height
-MK_SLOT_H   = 60          # height of each slot row (tile card + token)
-MK_TOP      = CONTENT_TOP + MK_HEADER_H + PAD   # y of first slot
-MK_TILE_W   = RIGHT_W - 68  # tile card width inside slot
-MK_TOK_W    = 52           # token chip width
-MK_BOTTOM   = MK_TOP + MARKET_SIZE * MK_SLOT_H  # y just below last slot
+# Log below market slots
+LOG_Y = MK_TOP + MARKET_SIZE * MK_SLOT_H + 4
+LOG_H = H - STH - LOG_Y - 50  # leave room for action buttons above status
 
-# Action button strip below market
-BTN_STRIP_Y = MK_BOTTOM + PAD
-BTN_H       = 28
+# Action button row just above status bar
+ACT_Y = H - STH - 46
 
-# Log fills remaining vertical space below button strip
-LOG_Y  = BTN_STRIP_Y + BTN_H + PAD
-LOG_H  = CONTENT_BOT - LOG_Y - PAD
+
+WILDLIFE_SHORT = {"bear":"BR","elk":"EL","salmon":"SA","hawk":"HK","fox":"FX"}
+HABITAT_SHORT  = {"forest":"FOR","wetland":"WET","mountain":"MTN",
+                  "prairie":"PRA","river":"RIV"}
+W_COLORS = {
+    "bear":   (139, 90,  43),
+    "elk":    (160,130,  50),
+    "salmon": (210, 85,  65),
+    "hawk":   (170,140,  40),
+    "fox":    (200, 85,  20),
+}
+H_COLORS = {
+    "forest":  (80,130, 60),
+    "wetland": (60,130,100),
+    "mountain":(110,110,130),
+    "prairie": (170,155, 55),
+    "river":   (60,120,180),
+}
 
 
 class GameScreen:
     def __init__(self, engine: GameEngine, on_game_over, on_menu):
-        self.engine       = engine
-        self.on_game_over = on_game_over
-        self.on_menu      = on_menu
+        self._eng         = engine
+        self._on_game_over= on_game_over
+        self._on_menu     = on_menu
 
-        self._tf  = get_title_font(16)
-        self._hf  = get_font(14, bold=True)
-        self._bf  = get_font(13)
-        self._smf = get_font(13)
+        self._f_tb  = font(13, bold=True)
+        self._f_hdr = font(13, bold=True)
+        self._f_row = font(13)
+        self._f_sm  = font(11)
 
         # Board pan state
         self._ox = self._oy = 0
-        self._dragging    = False
-        self._drag_start  = None
-        self._drag_origin = None
+        self._drag = False
+        self._drag_start = self._drag_origin = None
 
-        self._hovered_board  = None
-        self._hovered_market = None
-        self._nature_mode     = False
-        self._nature_tile_idx = None
+        # Nature-pick mode
+        self._nat_mode     = False
+        self._nat_tile_idx = None
 
-        # ── Market rects ───────────────────────────────────────────────────
+        # Hover
+        self._hov_board  = None
+        self._hov_market = None
+
+        # Market rects (computed once)
         self._mk_tile_rects  = []
-        self._mk_token_rects = []
+        self._mk_tok_rects   = []
         for i in range(MARKET_SIZE):
-            sy = MK_TOP + i * MK_SLOT_H
-            self._mk_tile_rects.append(
-                pygame.Rect(RP_X + PAD, sy + 2, MK_TILE_W, MK_SLOT_H - 6))
-            self._mk_token_rects.append(
-                pygame.Rect(RP_X + PAD + MK_TILE_W + 4, sy + 8, MK_TOK_W, MK_SLOT_H - 18))
+            y = MK_TOP + i * MK_SLOT_H
+            self._mk_tile_rects.append(pygame.Rect(MK_X, y+4, MK_TW, MK_SLOT_H-8))
+            self._mk_tok_rects.append(pygame.Rect(MK_TOK_X, y+12, MK_TOK_W, MK_SLOT_H-24))
 
-        # ── Action buttons (right panel) ───────────────────────────────────
-        bx  = RP_X + PAD
-        bw  = RIGHT_W - PAD * 2
-        bw2 = (bw - 4) // 2
+        # Log
+        self._log  = ScrollList(pygame.Rect(RX+4, LOG_Y, RW-8, LOG_H), fsize=12)
+        self._log_n = 0
+        for m in engine.log[-40:]: self._log.items.append(m)
+        self._log_n = len(engine.log)
 
-        self._btn_discard = Button(
-            pygame.Rect(bx, BTN_STRIP_Y, bw, BTN_H),
-            "Discard Token (+Nature)", self._do_discard, font_size=13)
+        # Action buttons (right panel, above status bar)
+        bw2 = (RW-14)//2
+        self._btn_discard    = Button((RX+4,       ACT_Y, RW-8,  42), "Discard Token  (+Nature)", self._do_discard, 14, True)
+        self._btn_nat_rep    = Button((RX+4,       ACT_Y, bw2,   38), "Replace Tokens",            self._do_nat_rep, 11)
+        self._btn_nat_pick   = Button((RX+bw2+10,  ACT_Y, bw2,   38), "Free Pick",                 self._do_nat_pick,11)
+        self._btn_menu       = Button((6, H-STH-32, LW-12, 28), "Menu", on_menu, 13)
 
-        self._btn_nat_replace = Button(
-            pygame.Rect(bx, BTN_STRIP_Y, bw2, BTN_H),
-            "Replace Tokens", self._do_nature_replace, font_size=12)
-        self._btn_nat_pick = Button(
-            pygame.Rect(bx + bw2 + 4, BTN_STRIP_Y, bw2, BTN_H),
-            "Free Pick", self._do_nature_pick, font_size=12)
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def _borigin(self):
+        return (BCX + self._ox, BCY + self._oy)
 
-        # ── Event log ──────────────────────────────────────────────────────
-        self._log = ScrollLog(pygame.Rect(bx, LOG_Y, bw, LOG_H))
-        for m in engine.log[-30:]:
-            self._log.add(m)
-        self._log_len = len(engine.log)
+    def _b2p(self, q, r):
+        ox, oy = self._borigin()
+        return hex_to_pixel(q, r, ox, oy)
 
-        # ── Menu button (bottom of left panel) ────────────────────────────
-        self._btn_menu = Button(
-            pygame.Rect(PAD, CONTENT_BOT - BTN_H - PAD, LEFT_W - PAD * 2, BTN_H),
-            "Menu", on_menu, font_size=13)
+    def _p2b(self, px, py):
+        ox, oy = self._borigin()
+        return pixel_to_hex(px, py, ox, oy)
 
-        self._tooltip = Tooltip()
+    def _in_board(self, px, py):
+        return BX < px < BX + BW and TH < py < H - STH
 
-    # ── Events ────────────────────────────────────────────────────────────────
-    def handle_event(self, event):
-        if self.engine.is_game_over():
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                self.on_menu()
+    def _sync_log(self):
+        for m in self._eng.log[self._log_n:]:
+            self._log.items.append(m)
+            if len(self._log.items) > 120:
+                self._log.items = self._log.items[-120:]
+        self._log_n = len(self._eng.log)
+        # auto-scroll to bottom
+        vis = self._log._vis()
+        self._log._scroll = max(0, len(self._log.items) - vis)
+
+    # ── actions ───────────────────────────────────────────────────────────────
+    def _do_discard(self):
+        self._eng.discard_token(); self._sync_log()
+
+    def _do_nat_rep(self):
+        self._eng.use_nature_token_replace_tokens(); self._sync_log()
+
+    def _do_nat_pick(self):
+        if self._eng.current_player.nature_tokens > 0:
+            self._nat_mode = True; self._nat_tile_idx = None
+
+    # ── events ────────────────────────────────────────────────────────────────
+    def handle_event(self, ev):
+        if self._eng.is_game_over():
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                self._on_menu()
+            # still handle menu button
+            self._btn_menu.handle(ev)
             return
 
-        self._log.handle_event(event)
-        self._btn_menu.handle_event(event)
+        self._btn_menu.handle(ev)
+        self._log.handle(ev)
 
-        phase = self.engine.phase
-        nt    = self.engine.current_player.nature_tokens > 0
+        phase = self._eng.phase
+        nt    = self._eng.current_player.nature_tokens > 0
 
-        self._btn_discard.set_disabled(phase != Phase.PLACE_TOKEN)
-        self._btn_nat_replace.set_disabled(phase != Phase.SELECT_PAIR or not nt)
-        self._btn_nat_pick.set_disabled(phase != Phase.SELECT_PAIR or not nt)
+        self._btn_discard.enabled  = (phase == Phase.PLACE_TOKEN)
+        self._btn_nat_rep.enabled  = (phase == Phase.SELECT_PAIR and nt)
+        self._btn_nat_pick.enabled = (phase == Phase.SELECT_PAIR and nt)
 
-        self._btn_discard.handle_event(event)
-        self._btn_nat_replace.handle_event(event)
-        self._btn_nat_pick.handle_event(event)
+        self._btn_discard.handle(ev)
+        self._btn_nat_rep.handle(ev)
+        self._btn_nat_pick.handle(ev)
 
-        if event.type == pygame.MOUSEMOTION:
-            self._on_motion(event)
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1:
-                self._on_click(event.pos)
-            elif event.button in (2, 3):
-                self._dragging    = True
-                self._drag_start  = event.pos
+        if ev.type == pygame.MOUSEMOTION:
+            mx, my = ev.pos
+            self._hov_board  = self._p2b(mx, my) if self._in_board(mx, my) else None
+            self._hov_market = next(
+                (i for i in range(MARKET_SIZE)
+                 if self._mk_tile_rects[i].collidepoint(ev.pos) or
+                    self._mk_tok_rects[i].collidepoint(ev.pos)), None)
+            if self._drag and self._drag_start:
+                self._ox = self._drag_origin[0] + mx - self._drag_start[0]
+                self._oy = self._drag_origin[1] + my - self._drag_start[1]
+
+        if ev.type == pygame.MOUSEBUTTONDOWN:
+            if ev.button in (2, 3):
+                self._drag        = True
+                self._drag_start  = ev.pos
                 self._drag_origin = (self._ox, self._oy)
-        if event.type == pygame.MOUSEBUTTONUP and event.button in (2, 3):
-            self._dragging = False
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            self._nature_mode = False
+            if ev.button == 1:
+                self._on_click(ev.pos)
 
-    def _on_motion(self, event):
-        mx, my = event.pos
-        if self._dragging and self._drag_start:
-            self._ox = self._drag_origin[0] + mx - self._drag_start[0]
-            self._oy = self._drag_origin[1] + my - self._drag_start[1]
+        if ev.type == pygame.MOUSEBUTTONUP and ev.button in (2, 3):
+            self._drag = False
 
-        self._hovered_board  = None
-        self._hovered_market = None
-
-        if BOARD_X < mx < BOARD_X + BOARD_W and CONTENT_TOP < my < CONTENT_BOT:
-            self._hovered_board = self._px2board(mx, my)
-
-        for i in range(MARKET_SIZE):
-            if (self._mk_tile_rects[i].collidepoint(mx, my) or
-                    self._mk_token_rects[i].collidepoint(mx, my)):
-                self._hovered_market = i
-                break
-
-        self._tooltip.hide()
-        self._make_tooltip(mx, my)
-
-    def _make_tooltip(self, mx, my):
-        eng = self.engine
-        if self._hovered_board and self._hovered_board in eng.current_player.board:
-            t = eng.current_player.board[self._hovered_board]
-            lines = [f"Habitats: {', '.join(t.habitats)}",
-                     f"Accepts:  {', '.join(t.accepts)}"]
-            if t.token:   lines.append(f"Token: {t.token.wildlife_type}")
-            if t.keystone: lines.append("* Keystone tile")
-            self._tooltip.show("\n".join(lines), (mx, my))
-        elif self._hovered_market is not None:
-            i  = self._hovered_market
-            tile = eng.market_tiles[i]
-            tok  = eng.market_tokens[i]
-            lines = [f"Market slot {i+1}"]
-            if tile: lines.append(f"Tile: {', '.join(tile.habitats)}")
-            if tok:  lines.append(f"Token: {tok.wildlife_type}")
-            self._tooltip.show("\n".join(lines), (mx, my))
+        if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+            self._nat_mode = False
 
     def _on_click(self, pos):
-        mx, my = pos
-        eng   = self.engine
+        eng   = self._eng
         phase = eng.phase
+        mx, my = pos
 
+        # ── SELECT_PAIR ──────────────────────────────────────────────────
         if phase == Phase.SELECT_PAIR:
-            if self._nature_mode:
-                # First click picks tile slot, second picks token slot
-                if self._nature_tile_idx is None:
+            if self._nat_mode:
+                # step 1: pick tile slot
+                if self._nat_tile_idx is None:
                     for i in range(MARKET_SIZE):
                         if self._mk_tile_rects[i].collidepoint(pos) and eng.market_tiles[i]:
-                            self._nature_tile_idx = i
+                            self._nat_tile_idx = i
                             return
+                # step 2: pick token slot
                 else:
                     for i in range(MARKET_SIZE):
-                        if self._mk_token_rects[i].collidepoint(pos) and eng.market_tokens[i]:
-                            eng.use_nature_token_pick_freely(self._nature_tile_idx, i)
-                            self._nature_mode = False
-                            self._nature_tile_idx = None
-                            self._sync_log()
-                            return
-                self._nature_mode = False
+                        if self._mk_tok_rects[i].collidepoint(pos) and eng.market_tokens[i]:
+                            eng.use_nature_token_pick_freely(self._nat_tile_idx, i)
+                            self._nat_mode = False; self._nat_tile_idx = None
+                            self._sync_log(); return
                 return
 
             for i in range(MARKET_SIZE):
                 if (self._mk_tile_rects[i].collidepoint(pos) or
-                        self._mk_token_rects[i].collidepoint(pos)):
+                        self._mk_tok_rects[i].collidepoint(pos)):
                     if eng.market_tiles[i]:
-                        eng.select_market_pair(i)
-                        self._sync_log()
-                        return
+                        eng.select_market_pair(i); self._sync_log(); return
 
+        # ── PLACE_TILE ───────────────────────────────────────────────────
         elif phase == Phase.PLACE_TILE:
-            if BOARD_X < mx < BOARD_X + BOARD_W and CONTENT_TOP < my < CONTENT_BOT:
-                q, r = self._px2board(mx, my)
-                if eng.place_tile(q, r):
-                    self._sync_log()
+            if self._in_board(mx, my):
+                q, r = self._p2b(mx, my)
+                if eng.place_tile(q, r): self._sync_log()
 
+        # ── PLACE_TOKEN ──────────────────────────────────────────────────
         elif phase == Phase.PLACE_TOKEN:
-            if BOARD_X < mx < BOARD_X + BOARD_W and CONTENT_TOP < my < CONTENT_BOT:
-                q, r = self._px2board(mx, my)
+            if self._in_board(mx, my):
+                q, r = self._p2b(mx, my)
                 if eng.place_token(q, r):
                     self._sync_log()
-                    if eng.is_game_over():
-                        self.on_game_over(eng)
+                    if eng.is_game_over(): self._on_game_over(eng)
 
-    def _do_discard(self):
-        self.engine.discard_token()
-        self._sync_log()
+    # ── update/draw ───────────────────────────────────────────────────────────
+    def update(self): pass
 
-    def _do_nature_replace(self):
-        self.engine.use_nature_token_replace_tokens()
-        self._sync_log()
+    def draw(self, surf):
+        surf.fill(C["face"])
+        self._draw_title(surf)
+        self._draw_status(surf)
+        self._draw_left(surf)
+        self._draw_board(surf)
+        self._draw_right(surf)
+        # vertical dividers
+        pygame.draw.line(surf, C["gray"],  (LW,   TH), (LW,   H-STH))
+        pygame.draw.line(surf, C["white"], (LW+1, TH), (LW+1, H-STH))
+        pygame.draw.line(surf, C["gray"],  (RX,   TH), (RX,   H-STH))
+        pygame.draw.line(surf, C["white"], (RX+1, TH), (RX+1, H-STH))
+        if self._eng.is_game_over():
+            self._draw_gameover(surf)
 
-    def _do_nature_pick(self):
-        if self.engine.current_player.nature_tokens > 0:
-            self._nature_mode     = True
-            self._nature_tile_idx = None
+    def _draw_title(self, surf):
+        eng = self._eng
+        lbl = (f"Cascadia  —  {eng.current_player.name}'s Turn"
+               f"   (Turn {eng.turns_taken+1}/{eng.total_turns})")
+        title_bar(surf, pygame.Rect(0, 0, W, TH), lbl, self._f_tb)
 
-    def _sync_log(self):
-        for m in self.engine.log[self._log_len:]:
-            self._log.add(m)
-        self._log_len = len(self.engine.log)
+    def _draw_status(self, surf):
+        eng = self._eng
+        msgs = {
+            Phase.SELECT_PAIR:  "Click a market slot (tile card or token) to select the pair",
+            Phase.PLACE_TILE:   "Click a green hex on the board to place your tile",
+            Phase.PLACE_TOKEN:  "Click a highlighted tile to place token  —  or use Discard button",
+            Phase.GAME_OVER:    "Game over!  Press ESC or click Menu to return.",
+        }
+        sb = pygame.Rect(0, H-STH, W, STH)
+        pygame.draw.rect(surf, C["face"], sb)
+        bevel(surf, sb, raised=False)
+        msg = msgs.get(eng.phase, "")
+        if self._nat_mode:
+            msg = ("Step 1: click a TILE card" if self._nat_tile_idx is None
+                   else "Step 2: click a TOKEN chip")
+        txt(surf, msg, self._f_sm, C["black"], 8, H-STH+7)
 
-    # ── Coord helpers ─────────────────────────────────────────────────────────
-    def _board_origin(self):
-        return (BOARD_CX + self._ox, BOARD_CY + self._oy)
+    def _draw_left(self, surf):
+        eng = self._eng
+        pygame.draw.rect(surf, C["face"], pygame.Rect(0, TH, LW, H-TH-STH))
 
-    def _board2px(self, q, r):
-        ox, oy = self._board_origin()
-        return hex_to_pixel(q, r, ox, oy)
+        y = TH + 8
+        txt(surf, "Scoring Cards", self._f_hdr, C["black"], 8, y); y += 20
+        for w, v in eng.scoring_cards.items():
+            col = W_COLORS.get(w, (100,100,100))
+            pygame.draw.circle(surf, col, (16, y+7), 6)
+            pygame.draw.circle(surf, C["black"], (16, y+7), 6, 1)
+            txt(surf, f"{WILDLIFE_SHORT.get(w,w[:2])} — Card {v}",
+                self._f_row, C["black"], 26, y)
+            y += 18
+        y += 4
+        hrule(surf, y, 4, LW-4); y += 8
 
-    def _px2board(self, px, py):
-        ox, oy = self._board_origin()
-        return pixel_to_hex(px, py, ox, oy)
-
-    def update(self, dt):
-        pass
-
-    # ── Draw ──────────────────────────────────────────────────────────────────
-    def draw(self, surface):
-        # 1. Background (whole window silver)
-        surface.fill(COLORS["bg_panel"])
-
-        # 2. Title bar
-        tb = pygame.Rect(0, 0, W, TITLE_H)
-        eng = self.engine
-        title = (f"Cascadia  —  {eng.current_player.name}'s Turn  "
-                 f"(Turn {eng.turns_taken + 1}/{eng.total_turns})")
-        draw_title_bar(surface, tb, title, self._tf)
-
-        # 3. Status bar
-        sb = pygame.Rect(0, CONTENT_BOT, W, STATUS_H)
-        pygame.draw.rect(surface, COLORS["bg_panel"], sb)
-        bevel_rect(surface, sb, raised=False, width=1)
-        self._draw_status(surface, sb)
-
-        # 4. Vertical dividers between panels
-        for dx in [LEFT_W, W - RIGHT_W]:
-            pygame.draw.line(surface, COLORS["bevel_shadow"],
-                             (dx, CONTENT_TOP), (dx, CONTENT_BOT))
-            pygame.draw.line(surface, COLORS["bevel_light"],
-                             (dx + 1, CONTENT_TOP), (dx + 1, CONTENT_BOT))
-
-        # 5. Panels (draw in order: left, board, right)
-        self._draw_left(surface)
-        self._draw_board(surface)
-        self._draw_right(surface)
-
-        # 6. Tooltip on top
-        self._tooltip.draw(surface)
-
-        # 7. Game-over modal on top of everything
-        if eng.is_game_over():
-            self._draw_gameover(surface)
-
-    # ── Left panel ────────────────────────────────────────────────────────────
-    def _draw_left(self, surface):
-        eng = self.engine
-        x   = PAD
-        y   = CONTENT_TOP + PAD
-
-        # ── Scoring cards group ────────────────────────────────────────────
-        gc_h = 14 + len(eng.scoring_cards) * 18 + 6
-        gc   = GroupBox(pygame.Rect(x, y, LEFT_W - PAD * 2, gc_h), "Scoring Cards")
-        gc.draw(surface)
-        ci   = gc.client
-        cy   = ci.y
-        for wildlife, variant in eng.scoring_cards.items():
-            col = COLORS.get(wildlife, COLORS["text_dark"])
-            pygame.draw.circle(surface, col, (ci.x + 7, cy + 8), 5)
-            pygame.draw.circle(surface, (0,0,0), (ci.x + 7, cy + 8), 5, 1)
-            draw_text(surface,
-                      f"{WILDLIFE_ASCII.get(wildlife, wildlife[:2])} — Card {variant}",
-                      self._smf, COLORS["text_dark"], ci.x + 16, cy + 1)
-            cy += 18
-        y += gc_h + PAD
-
-        # ── Players group ──────────────────────────────────────────────────
-        row_h = 52
-        gp_h  = 14 + len(eng.players) * row_h + 4
-        gp    = GroupBox(pygame.Rect(x, y, LEFT_W - PAD * 2, gp_h), "Players")
-        gp.draw(surface)
-        pi = gp.client
-        py = pi.y
+        txt(surf, "Players", self._f_hdr, C["black"], 8, y); y += 20
         for p in eng.players:
             is_cur = (p.player_id == eng.current_player.player_id
                       and not eng.is_game_over())
+            row_r  = pygame.Rect(4, y-2, LW-8, 56)
+
             if is_cur:
-                hl = pygame.Rect(pi.x - 2, py - 1, gp.rect.width - 8, row_h)
-                fill_bevel_rect(surface, hl, raised=False)
+                # Bold coloured banner for the active player
+                pygame.draw.rect(surf, C["title"], row_r)          # navy fill
+                pygame.draw.rect(surf, (100,140,255),
+                                 pygame.Rect(4, y-2, 5, 56))       # accent stripe
+                name_col  = C["white"]
+                extra_col = (180, 200, 255)
+                prefix = ">>>"
+            else:
+                pygame.draw.rect(surf, C["face"], row_r)
+                bevel(surf, row_r, raised=True)
+                name_col  = C["black"]
+                extra_col = C["muted"]
+                prefix = "   "
 
-            # Colour dot + name
-            pygame.draw.circle(surface, p.color, (pi.x + 8, py + 9), 7)
-            pygame.draw.circle(surface, (0,0,0), (pi.x + 8, py + 9), 7, 1)
-            prefix = ">" if is_cur else " "
-            draw_text(surface, f"{prefix} {p.name}", self._bf,
-                      COLORS["text_dark"], pi.x + 18, py + 2)
+            pygame.draw.circle(surf, p.color,   (22, y+10), 9)
+            pygame.draw.circle(surf, C["white"] if is_cur else C["black"],
+                               (22, y+10), 9, 1)
+            txt(surf, f"{prefix} {p.name}", self._f_hdr, name_col, 34, y)
+            txt(surf, f"  Nature tokens: {p.nature_tokens}", self._f_sm, extra_col, 34, y+18)
 
-            # Nature tokens
-            draw_text(surface, f"Nature: {p.nature_tokens}", self._smf,
-                      COLORS["text_dark"], pi.x + 18, py + 19)
-
-            # Wildlife token counts on one row
-            counts = p.wildlife_counts()
-            tx = pi.x + 4
-            ty = py + 35
-            for w, cnt in counts.items():
+            # wildlife token counts
+            tx = 34
+            for w, cnt in p.wildlife_counts().items():
                 if cnt:
-                    col = COLORS.get(w, (120, 120, 120))
-                    pygame.draw.circle(surface, col, (tx + 5, ty + 6), 5)
-                    pygame.draw.circle(surface, (0,0,0), (tx + 5, ty + 6), 5, 1)
-                    draw_text(surface, str(cnt), self._smf,
-                              COLORS["text_dark"], tx + 12, ty)
-                    tx += 28
-            py += row_h
-        y += gp_h + PAD
+                    col = W_COLORS.get(w, (100,100,100))
+                    pygame.draw.circle(surf, col,                       (tx+5, y+36), 5)
+                    pygame.draw.circle(surf, C["white"] if is_cur else C["black"],
+                                       (tx+5, y+36), 5, 1)
+                    txt(surf, str(cnt), self._f_sm, extra_col, tx+12, y+30)
+                    tx += 26
+            y += 62
+        hrule(surf, y, 4, LW-4); y += 6
 
-        # ── Menu button ────────────────────────────────────────────────────
-        self._btn_menu.draw(surface)
+        # Tile count
+        txt(surf, f"Board: {len(eng.current_player.board)} tiles",
+            self._f_sm, C["muted"], 8, y)
 
-    # ── Board ─────────────────────────────────────────────────────────────────
-    def _draw_board(self, surface):
-        board_rect = pygame.Rect(BOARD_X + 2, CONTENT_TOP,
-                                 BOARD_W - 4, CONTENT_H)
-        # Grey board background
-        pygame.draw.rect(surface, (168, 168, 168), board_rect)
+        self._btn_menu.draw(surf)
 
-        eng   = self.engine
+    def _draw_board(self, surf):
+        eng   = self._eng
         phase = eng.phase
 
-        ghost_pos = (eng.pending_placement_positions
-                     if phase == Phase.PLACE_TILE else [])
-        token_pos = (eng.get_valid_token_positions()
-                     if phase == Phase.PLACE_TOKEN and eng.selected_token else [])
+        board_r = pygame.Rect(BX+2, TH, BW-4, H-TH-STH)
+        pygame.draw.rect(surf, (150,150,150), board_r)
 
-        clip = surface.get_clip()
-        surface.set_clip(board_rect)
+        ghost_pos = eng.pending_placement_positions if phase==Phase.PLACE_TILE else []
+        tok_pos   = (eng.get_valid_token_positions()
+                     if phase==Phase.PLACE_TOKEN and eng.selected_token else [])
+
+        clip = surf.get_clip()
+        surf.set_clip(board_r)
 
         for (q, r), tile in eng.current_player.board.items():
-            cx, cy = self._board2px(q, r)
-            if not (-HEX_SIZE <= cx - BOARD_X <= BOARD_W + HEX_SIZE and
-                    -HEX_SIZE <= cy - CONTENT_TOP <= CONTENT_H + HEX_SIZE):
+            cx, cy = self._b2p(q, r)
+            if not (BX-HEX_SIZE < cx < BX+BW+HEX_SIZE and
+                    TH-HEX_SIZE  < cy < H-STH+HEX_SIZE):
                 continue
-            is_hl = (q, r) in token_pos
-            HexCell(cx, cy, tile, highlight=is_hl).draw(surface)
+            HexCell(cx, cy, tile, highlight=(q,r) in tok_pos).draw(surf)
 
         for (q, r) in ghost_pos:
-            cx, cy = self._board2px(q, r)
-            if (-HEX_SIZE <= cx - BOARD_X <= BOARD_W + HEX_SIZE and
-                    -HEX_SIZE <= cy - CONTENT_TOP <= CONTENT_H + HEX_SIZE):
-                HexCell(cx, cy, ghost=True).draw(surface)
+            cx, cy = self._b2p(q, r)
+            if BX-HEX_SIZE < cx < BX+BW+HEX_SIZE:
+                HexCell(cx, cy, ghost=True).draw(surf)
 
-        surface.set_clip(clip)
+        surf.set_clip(clip)
 
-        # Phase hint label, centred at top of board
-        phase_msgs = {
-            Phase.SELECT_PAIR: "Select a market pair  (right panel) →",
-            Phase.PLACE_TILE:  "Click a green hex to place your tile",
-            Phase.PLACE_TOKEN: "Click a highlighted tile to place token",
+        # Phase hint inside board
+        phase_hint = {
+            Phase.PLACE_TILE:  "Click a green hex to place tile",
+            Phase.PLACE_TOKEN: "Click highlighted tile to place token",
         }
-        msg = phase_msgs.get(phase, "")
-        if msg:
-            lbl_surf = self._smf.render(msg, True, (0, 0, 0))
-            lx = BOARD_X + (BOARD_W - lbl_surf.get_width()) // 2
-            ly = CONTENT_TOP + 4
-            bg = pygame.Rect(lx - 4, ly - 2,
-                             lbl_surf.get_width() + 8, lbl_surf.get_height() + 4)
-            pygame.draw.rect(surface, COLORS["bg_panel"], bg)
-            bevel_rect(surface, bg, raised=True, width=1)
-            surface.blit(lbl_surf, (lx, ly))
+        if eng.phase in phase_hint:
+            s = self._f_sm.render(phase_hint[eng.phase], True, C["black"])
+            bx2 = BCX - s.get_width()//2 - 4
+            by2 = TH + 4
+            pygame.draw.rect(surf, C["face"],
+                             pygame.Rect(bx2-2, by2-2, s.get_width()+12, s.get_height()+4))
+            bevel(surf, pygame.Rect(bx2-2, by2-2, s.get_width()+12, s.get_height()+4),
+                  raised=True)
+            surf.blit(s, (bx2+4, by2))
 
-        # Pan hint at board bottom
-        hint = f"{eng.current_player.name}'s board — {len(eng.current_player.board)} tiles   |   RMB drag to pan"
-        draw_text(surface, hint, self._smf, (60, 60, 60),
-                  BOARD_X + BOARD_W // 2, CONTENT_BOT - 18, align="center")
+        txt(surf, "Right-click drag to pan board",
+            self._f_sm, (60,60,60), BCX, H-STH-14, cx=True)
 
-        # Nature mode overlay
-        if self._nature_mode:
-            if self._nature_tile_idx is None:
-                nat_msg = "Nature: click a TILE card in the market →"
-            else:
-                nat_msg = "Nature: now click a TOKEN chip in the market →"
-            nm_surf = self._smf.render(nat_msg, True, (0, 0, 128))
-            nx = BOARD_X + (BOARD_W - nm_surf.get_width()) // 2
-            ny = CONTENT_TOP + 28
-            nbg = pygame.Rect(nx - 4, ny - 2, nm_surf.get_width() + 8, nm_surf.get_height() + 4)
-            pygame.draw.rect(surface, (255, 255, 200), nbg)
-            bevel_rect(surface, nbg, raised=True, width=1)
-            surface.blit(nm_surf, (nx, ny))
-
-    # ── Right panel ───────────────────────────────────────────────────────────
-    def _draw_right(self, surface):
-        eng   = self.engine
+    def _draw_right(self, surf):
+        eng   = self._eng
         phase = eng.phase
-        nt    = eng.current_player.nature_tokens
+        pygame.draw.rect(surf, C["face"], pygame.Rect(RX, TH, RW, H-TH-STH))
 
         # "Market" header
-        draw_text(surface, "Market", self._hf, COLORS["text_dark"],
-                  RP_X + RIGHT_W // 2, CONTENT_TOP + PAD, align="center")
+        txt(surf, "Market", self._f_hdr, C["black"], RX + RW//2, TH+8, cx=True)
+        hrule(surf, TH+26, RX+4, W-4)
 
-        # Horizontal rule under header
-        rule_y = CONTENT_TOP + MK_HEADER_H
-        pygame.draw.line(surface, COLORS["bevel_shadow"],
-                         (RP_X + PAD, rule_y), (W - PAD, rule_y))
-        pygame.draw.line(surface, COLORS["bevel_light"],
-                         (RP_X + PAD, rule_y + 1), (W - PAD, rule_y + 1))
-
-        # Market slots
         for i in range(MARKET_SIZE):
             tile = eng.market_tiles[i]
             tok  = eng.market_tokens[i]
             tr   = self._mk_tile_rects[i]
-            kr   = self._mk_token_rects[i]
-            hov  = (self._hovered_market == i)
+            kr   = self._mk_tok_rects[i]
 
-            # ── Tile card ──────────────────────────────────────────────────
-            fill_col = (COLORS.get(tile.primary_habitat(), COLORS["bg_card"])
-                        if tile else COLORS["bg_card"])
-            pygame.draw.rect(surface, fill_col, tr)
-            bevel_rect(surface, tr, raised=not (hov and phase == Phase.SELECT_PAIR))
+            hov = (self._hov_market == i and phase == Phase.SELECT_PAIR)
+            nat_t = (self._nat_mode and self._nat_tile_idx == i)
+
+            # Tile card
+            fill = H_COLORS.get(tile.primary_habitat(), (200,200,200)) if tile else C["face"]
+            pygame.draw.rect(surf, fill, tr)
+            bevel(surf, tr, raised=not (hov or nat_t))
 
             if tile:
-                hab = " / ".join(HABITAT_LABELS.get(h, h[:3]) for h in tile.habitats)
-                acc = "  ".join(WILDLIFE_ASCII.get(w, w[:2]) for w in tile.accepts)
-                draw_text(surface, f"[{i+1}] {hab}", self._smf, (0, 0, 0),
-                          tr.x + 4, tr.y + 4)
-                draw_text(surface, acc, self._smf, (50, 50, 50),
-                          tr.x + 4, tr.y + 22)
+                hab = "/".join(HABITAT_SHORT.get(h,h[:3]) for h in tile.habitats)
+                acc = " ".join(WILDLIFE_SHORT.get(w,w[:2]) for w in tile.accepts)
+                txt(surf, f"[{i+1}] {hab}", self._f_sm, C["black"], tr.x+4, tr.y+4)
+                txt(surf, f"  {acc}",        self._f_sm, (40,40,40),  tr.x+4, tr.y+18)
                 if tile.keystone:
-                    draw_text(surface, "*KEY", self._smf, (140, 100, 0),
-                              tr.x + 4, tr.y + 40)
+                    txt(surf, "KEY", self._f_sm, (120,80,0), tr.x+4, tr.y+32)
             else:
-                draw_text(surface, "(empty)", self._smf, COLORS["disabled"],
-                          tr.x + 4, tr.y + 18)
+                txt(surf, "(empty)", self._f_sm, C["gray"], tr.x+4, tr.y+16)
 
-            # ── Token chip ─────────────────────────────────────────────────
+            # Token chip
             if tok:
-                col = COLORS.get(tok.wildlife_type, (160, 160, 160))
-                lbl = WILDLIFE_ASCII.get(tok.wildlife_type, tok.wildlife_type[:2])
-                pygame.draw.rect(surface, col, kr)
-                bevel_rect(surface, kr, raised=not (hov and phase == Phase.SELECT_PAIR))
-                draw_text(surface, lbl, self._bf, (0, 0, 0),
-                          kr.centerx, kr.centery - self._bf.get_height() // 2,
-                          align="center")
+                col = W_COLORS.get(tok.wildlife_type, (150,150,150))
+                pygame.draw.rect(surf, col, kr)
+                bevel(surf, kr, raised=not hov)
+                lbl = WILDLIFE_SHORT.get(tok.wildlife_type, tok.wildlife_type[:2])
+                s = self._f_row.render(lbl, True, C["black"])
+                surf.blit(s, (kr.x + (kr.w-s.get_width())//2,
+                              kr.y + (kr.h-s.get_height())//2))
             else:
-                pygame.draw.rect(surface, COLORS["bg_card"], kr)
-                bevel_rect(surface, kr, raised=False, width=1)
-                draw_text(surface, "—", self._smf, COLORS["disabled"],
-                          kr.centerx, kr.centery - self._smf.get_height() // 2,
-                          align="center")
+                pygame.draw.rect(surf, C["face"], kr)
+                bevel(surf, kr, raised=False)
 
-        # ── Action buttons below market ────────────────────────────────────
+        # Separator above actions
+        act_sep = ACT_Y - 6
+        hrule(surf, act_sep, RX+4, W-4)
+
+        # Action buttons
         if phase == Phase.PLACE_TOKEN:
-            self._btn_discard.draw(surface)
-        elif phase == Phase.SELECT_PAIR and nt > 0:
-            draw_text(surface, f"Nature tokens: {nt}", self._smf,
-                      COLORS["text_dark"],
-                      RP_X + PAD, BTN_STRIP_Y - 16)
-            self._btn_nat_replace.draw(surface)
-            self._btn_nat_pick.draw(surface)
-        else:
-            # Show greyed-out discard so panel doesn't jump around
-            self._btn_discard.set_disabled(True)
-            self._btn_discard.draw(surface)
-            self._btn_discard.set_disabled(phase != Phase.PLACE_TOKEN)
+            # Amber/yellow discard button — hard to miss
+            r = self._btn_discard.rect
+            amber      = (210, 140,  0)
+            amber_dark = (160, 100,  0)
+            amber_lite = (255, 200, 80)
+            pygame.draw.rect(surf, amber, r)
+            # manual bevel in amber tones
+            pygame.draw.line(surf, amber_lite, (r.x,     r.y),     (r.right-2, r.y))
+            pygame.draw.line(surf, amber_lite, (r.x,     r.y),     (r.x,       r.bottom-2))
+            pygame.draw.line(surf, amber_dark, (r.x,     r.bottom-1), (r.right-1, r.bottom-1))
+            pygame.draw.line(surf, amber_dark, (r.right-1, r.y),   (r.right-1, r.bottom-1))
+            s = font(14, bold=True).render("Discard Token  (+Nature)", True, C["black"])
+            surf.blit(s, (r.x + (r.w - s.get_width())//2,
+                          r.y + (r.h - s.get_height())//2))
+        elif phase == Phase.SELECT_PAIR and eng.current_player.nature_tokens > 0:
+            txt(surf, f"Nature tokens: {eng.current_player.nature_tokens}",
+                self._f_sm, C["black"], RX+4, ACT_Y-18)
+            self._btn_nat_rep.draw(surf)
+            self._btn_nat_pick.draw(surf)
 
-        # ── Selected pair preview ──────────────────────────────────────────
+        # Selected pair preview
         if eng.selected_tile:
-            py = BTN_STRIP_Y + BTN_H + PAD
-            draw_text(surface, "Selected:", self._smf, COLORS["text_dark"],
-                      RP_X + PAD, py)
-            hab = " / ".join(HABITAT_LABELS.get(h, h[:3])
-                             for h in eng.selected_tile.habitats)
-            draw_text(surface, hab, self._bf, COLORS["text_dark"],
-                      RP_X + PAD, py + 16)
+            py = act_sep - 46
+            txt(surf, "Selected:", self._f_sm, C["muted"], RX+4, py)
+            hab = "/".join(HABITAT_SHORT.get(h,h[:3]) for h in eng.selected_tile.habitats)
+            txt(surf, f"Tile: {hab}", self._f_row, C["black"], RX+4, py+14)
             if eng.selected_token:
-                draw_text(surface,
-                          f"Token: {eng.selected_token.wildlife_type}",
-                          self._smf, COLORS["text_dark"],
-                          RP_X + PAD, py + 32)
+                txt(surf, f"Token: {eng.selected_token.wildlife_type}",
+                    self._f_row, C["black"], RX+4, py+30)
 
-        # ── Log ────────────────────────────────────────────────────────────
-        # Label
-        draw_text(surface, "Event Log", self._smf, COLORS["text_muted"],
-                  RP_X + PAD, LOG_Y - 16)
-        self._log.draw(surface)
+        # Log
+        txt(surf, "Event log:", self._f_sm, C["muted"], RX+4, LOG_Y-16)
+        self._log.draw(surf)
 
-    # ── Status bar text ───────────────────────────────────────────────────────
-    def _draw_status(self, surface, sb):
-        phase = self.engine.phase
-        msgs = {
-            Phase.SELECT_PAIR:  "Click a market tile/token pair to select it",
-            Phase.PLACE_TILE:   "Click a green ghost hex on your board to place the tile",
-            Phase.PLACE_TOKEN:  "Click a highlighted tile to place token — or use Discard button",
-            Phase.GAME_OVER:    "Game Over — Press ESC to return to the main menu",
-        }
-        draw_text(surface, msgs.get(phase, ""), self._smf,
-                  COLORS["text_dark"], sb.x + 6, sb.y + 4)
+    def _draw_gameover(self, surf):
+        # Modal centred overlay
+        MW, MH = 520, 320
+        mx = (W - MW)//2
+        my = (H - MH)//2
+        overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+        overlay.fill((0,0,0,140))
+        surf.blit(overlay, (0,0))
 
-    # ── Game-over modal ───────────────────────────────────────────────────────
-    def _draw_gameover(self, surface):
-        # Dim overlay
-        dim = pygame.Surface((W, H), pygame.SRCALPHA)
-        dim.fill((0, 0, 0, 140))
-        surface.blit(dim, (0, 0))
+        panel_box(surf, pygame.Rect(mx, my, MW, MH))
+        title_bar(surf, pygame.Rect(mx+2, my+2, MW-4, TH),
+                  "Game Over — Final Scores", self._f_hdr)
 
-        eng    = self.engine
-        n_p    = len(eng.players)
-        win_w  = 520
-        win_h  = 80 + n_p * 56 + 50
-        wr     = pygame.Rect((W - win_w) // 2, (H - win_h) // 2, win_w, win_h)
-
-        # Window chrome
-        pygame.draw.rect(surface, COLORS["bg_panel"], wr)
-        bevel_rect(surface, wr, raised=True)
-        tb = pygame.Rect(wr.x + 2, wr.y + 2, wr.width - 4, 22)
-        draw_title_bar(surface, tb, "Game Over — Final Scores", self._tf)
-
-        x  = wr.x + 14
-        y  = wr.y + 32
-        sorted_p = sorted(eng.players, key=lambda p: -p.score)
-        medals   = ["1st", "2nd", "3rd", "4th"]
-
-        for rank, player in enumerate(sorted_p):
-            bd = eng.scores.get(player.player_id)
-            # Colour dot
-            pygame.draw.circle(surface, player.color, (x + 8, y + 10), 8)
-            pygame.draw.circle(surface, (0, 0, 0), (x + 8, y + 10), 8, 1)
-            draw_text(surface,
-                      f"{medals[rank]}  {player.name}  —  {player.score} pts",
-                      self._hf, COLORS["text_dark"], x + 20, y)
+        y = my + 2 + TH + 10
+        for rank, p in enumerate(sorted(self._eng.players, key=lambda x:-x.score)):
+            bd  = self._eng.scores.get(p.player_id)
+            med = ["1st","2nd","3rd","4th"][rank]
+            pygame.draw.circle(surf, p.color,   (mx+18, y+10), 8)
+            pygame.draw.circle(surf, C["black"], (mx+18, y+10), 8, 1)
+            txt(surf, f"{med}  {p.name}: {p.score} pts",
+                self._f_hdr, C["black"], mx+30, y)
             y += 22
             if bd:
-                ws   = bd.wildlife_scores
-                line = (f"    Bear:{ws.get('bear',0)}  Elk:{ws.get('elk',0)}  "
-                        f"Salmon:{ws.get('salmon',0)}  Hawk:{ws.get('hawk',0)}  "
-                        f"Fox:{ws.get('fox',0)}  "
-                        f"Habitat:{bd.habitat_score}  Nature:{bd.nature_token_score}")
-                draw_text(surface, line, self._smf, COLORS["text_muted"], x + 20, y)
-                y += 22
-            y += 12
+                ws = bd.wildlife_scores
+                line = (f"  Bear:{ws.get('bear',0)}  Elk:{ws.get('elk',0)}"
+                        f"  Salmon:{ws.get('salmon',0)}  Hawk:{ws.get('hawk',0)}"
+                        f"  Fox:{ws.get('fox',0)}  Habitat:{bd.habitat_score}"
+                        f"  Nature:{bd.nature_token_score}")
+                txt(surf, line, self._f_sm, C["muted"], mx+14, y)
+                y += 18
 
-        pygame.draw.line(surface, COLORS["bevel_shadow"],
-                         (wr.x + 10, y), (wr.right - 10, y))
-        y += 8
-        draw_text(surface, "Press ESC or click Menu to return to main menu.",
-                  self._smf, COLORS["text_muted"], wr.centerx, y, align="center")
+        y += 10
+        hrule(surf, y, mx+10, mx+MW-10)
+        y += 10
+        txt(surf, "Press ESC or click Menu to return to main menu.",
+            self._f_sm, C["muted"], mx+MW//2, y, cx=True)
