@@ -221,8 +221,12 @@ class HexCell:
 
     def draw(self, surface):
         if self.ghost:
-            draw_hex(surface, (180, 220, 180), self.cx, self.cy, self.size,
-                     border_color=(0, 128, 0), border_width=2, alpha=140)
+            draw_hex(surface, (100, 200, 100), self.cx, self.cy, self.size,
+                     border_color=(0, 180, 0), border_width=3, alpha=160)
+            # "+" in centre of ghost cell
+            s = self._font.render("+", True, (0, 100, 0))
+            surface.blit(s, (int(self.cx) - s.get_width()//2,
+                              int(self.cy) - s.get_height()//2))
             return
 
         fill   = self._fill_color
@@ -230,57 +234,93 @@ class HexCell:
         bw     = 1
 
         if self.selected:
-            border, bw = COLORS["selected"], 3
+            border, bw = (0, 0, 180), 3
         elif self.highlight:
-            border, bw = (0, 255, 0), 3
+            border = (0, 255, 80)   # neon green border only
+            bw     = 4
+            # no fill change — tile keeps its normal colour
 
         draw_hex(surface, fill, self.cx, self.cy, self.size,
                  border_color=border, border_width=bw)
+
+        # Second outer neon ring for extra visibility
+        if self.highlight:
+            draw_hex(surface, fill, self.cx, self.cy, self.size + 4,
+                     border_color=(0, 255, 80), border_width=2)
 
         if self.tile and len(self.tile.habitats) == 2:
             self._draw_dual(surface)
 
         if self.tile:
-            hab = "/".join(HABITAT_LABELS.get(h, h[:3].upper())
-                           for h in self.tile.habitats)
-            draw_text(surface, hab, self._font, (255, 255, 255),
-                      int(self.cx), int(self.cy) - 6, align="center")
+            self._draw_tile_info(surface)
 
-        if self.tile and self.tile.token:
+    def _draw_tile_info(self, surface):
+        cx, cy = int(self.cx), int(self.cy)
+        s      = self.size
+        f_hab  = get_font(11, bold=True)
+
+        # Habitat label at top of hex
+        hab = "/".join(HABITAT_LABELS.get(h, h[:3]) for h in self.tile.habitats)
+        draw_text(surface, hab, f_hab, (255, 255, 255), cx, cy - int(s * 0.58), align="center")
+
+        # Yellow dot top-right = keystone tile (only 1 wildlife accepted)
+        if self.tile.keystone:
+            pygame.draw.circle(surface, (255, 215, 0),
+                               (int(cx + s * 0.58), int(cy - s * 0.58)), 5)
+            pygame.draw.circle(surface, (0, 0, 0),
+                               (int(cx + s * 0.58), int(cy - s * 0.58)), 5, 1)
+
+        if self.tile.token:
             self._draw_token(surface)
-        elif self.tile:
+        else:
             self._draw_accepted(surface)
 
-        if self.tile and self.tile.keystone:
-            pygame.draw.circle(surface, COLORS["gold"],
-                               (int(self.cx + self.size * 0.55),
-                                int(self.cy - self.size * 0.55)), 4)
+    def _draw_token(self, surface):
+        tok   = self.tile.token
+        color = COLORS.get(tok.wildlife_type, (180, 180, 180))
+        cx, cy = int(self.cx), int(self.cy) + 4
+        pygame.draw.circle(surface, color,     (cx, cy), 16)
+        pygame.draw.circle(surface, (0, 0, 0), (cx, cy), 16, 2)
+        f   = get_font(11, bold=True)
+        lbl = tok.wildlife_type.capitalize()
+        s   = f.render(lbl, True, (0, 0, 0))
+        surface.blit(s, (cx - s.get_width()//2, cy - s.get_height()//2))
+
+    def _draw_accepted(self, surface):
+        """
+        Each accepted wildlife = coloured SQUARE + full name.
+        Squares are easier to distinguish than tiny circles.
+        """
+        accepts = sorted(self.tile.accepts)
+        n       = len(accepts)
+        cx      = int(self.cx)
+        f       = get_font(10)
+        lh      = f.get_height() + 2
+
+        total_h = n * lh
+        start_y = int(self.cy) + 4 - total_h // 2
+
+        for i, w in enumerate(accepts):
+            col  = COLORS.get(w, (150, 150, 150))
+            name = w.capitalize()
+            y    = start_y + i * lh
+            sq_x = cx - 30
+
+            # Coloured square (10×10) — easier to read than a dot
+            pygame.draw.rect(surface, col,       (sq_x, y + 1, 10, 10))
+            pygame.draw.rect(surface, (0, 0, 0), (sq_x, y + 1, 10, 10), 1)
+
+            s = f.render(name, True, (255, 255, 255))
+            surface.blit(s, (sq_x + 13, y))
 
     def _draw_dual(self, surface):
-        h2 = COLORS.get(self.tile.habitats[1], COLORS["bg_panel"])
+        """Tint the right half of the hex with the second habitat colour."""
+        h2 = COLORS.get(self.tile.habitats[1], (192, 192, 192))
         corners = hex_corners(self.cx, self.cy, self.size)
         right = [corners[5], corners[0], corners[1], corners[2], (self.cx, self.cy)]
         pygame.draw.polygon(surface, h2, [(int(x), int(y)) for x, y in right])
         pygame.draw.polygon(surface, (0, 0, 0),
                             [(int(x), int(y)) for x, y in corners], 1)
-
-    def _draw_token(self, surface):
-        tok   = self.tile.token
-        color = COLORS.get(tok.wildlife_type, (180, 180, 180))
-        label = WILDLIFE_ASCII.get(tok.wildlife_type, tok.wildlife_type[:2].upper())
-        draw_circle_token(surface, color, int(self.cx), int(self.cy) + 8,
-                          radius=13, label=label, font=self._tok_font,
-                          text_color=(0, 0, 0), border_color=(0, 0, 0))
-
-    def _draw_accepted(self, surface):
-        accepts = list(self.tile.accepts)[:3]
-        dot_y   = int(self.cy + self.size * 0.44)
-        total_w = len(accepts) * 10
-        start_x = int(self.cx) - total_w // 2 + 5
-        for i, w in enumerate(accepts):
-            col = COLORS.get(w, (180, 180, 180))
-            pygame.draw.circle(surface, col, (start_x + i * 10, dot_y), 4)
-            pygame.draw.circle(surface, (0, 0, 0), (start_x + i * 10, dot_y), 4, 1)
 
     def contains_point(self, px, py):
         return ((px - self.cx) ** 2 + (py - self.cy) ** 2) < (self.size ** 2)

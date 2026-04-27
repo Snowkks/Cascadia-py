@@ -191,49 +191,94 @@ class Label:
 
 
 class ScrollList:
-    """Scrollable list with click-to-select. Items are plain strings."""
-    ROW = 22
+    """Scrollable list with word-wrapped lines and scroll."""
+    PAD = 4
+
     def __init__(self, rect, items=None, fsize=13):
-        self.rect  = pygame.Rect(rect)
-        self.items = items or []
-        self._font = font(fsize)
+        self.rect    = pygame.Rect(rect)
+        self._font   = font(fsize)
+        self._lh     = self._font.get_height() + 3
         self._scroll = 0
         self.selected = -1
+        self._raw    = []        # original items added
+        self._lines  = []        # word-wrapped display lines
+        self._inner_w = self.rect.w - self.PAD * 2 - 4   # usable text width
+        for item in (items or []):
+            self._add_item(item)
+
+    def _wrap(self, text):
+        """Word-wrap a string to fit inside _inner_w."""
+        words   = str(text).split()
+        lines   = []
+        current = ""
+        for word in words:
+            test = (current + " " + word).strip()
+            if self._font.size(test)[0] <= self._inner_w:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                # If single word is too long, truncate it
+                while self._font.size(word)[0] > self._inner_w and len(word) > 1:
+                    word = word[:-1]
+                current = word
+        if current:
+            lines.append(current)
+        return lines or [""]
+
+    def _add_item(self, item):
+        self._raw.append(item)
+        self._lines.extend(self._wrap(item))
+
+    @property
+    def items(self):
+        return self._raw
+
+    @items.setter
+    def items(self, value):
+        self._raw   = []
+        self._lines = []
+        for v in value:
+            self._add_item(v)
+        self._scroll = 0
+
+    def append(self, item):
+        self._add_item(item)
+        # auto-scroll to bottom
+        vis = self._vis()
+        if len(self._lines) > vis:
+            self._scroll = len(self._lines) - vis
 
     def _vis(self):
-        return max(1, self.rect.h // self.ROW)
+        return max(1, (self.rect.h - self.PAD * 2) // self._lh)
 
     def handle(self, ev):
         if ev.type == pygame.MOUSEWHEEL:
             if self.rect.collidepoint(pygame.mouse.get_pos()):
                 self._scroll = max(0, min(
                     self._scroll - ev.y,
-                    max(0, len(self.items) - self._vis())))
-        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-            if self.rect.collidepoint(ev.pos):
-                i = (ev.pos[1] - self.rect.y) // self.ROW + self._scroll
-                if 0 <= i < len(self.items):
-                    self.selected = i
-                    return i
+                    max(0, len(self._lines) - self._vis())))
         return None
 
     def draw(self, surf):
+        # Background + sunken border
         pygame.draw.rect(surf, C["white"], self.rect)
         bevel(surf, self.rect, raised=False)
+
+        # Clip strictly to inner area
+        inner = pygame.Rect(
+            self.rect.x + 2,
+            self.rect.y + 2,
+            self.rect.w - 4,
+            self.rect.h - 4,
+        )
         clip = surf.get_clip()
-        surf.set_clip(self.rect.inflate(-2, -2))
-        mx, my = pygame.mouse.get_pos()
-        for i, item in enumerate(self.items[self._scroll:self._scroll+self._vis()]):
-            ry  = self.rect.y + i * self.ROW
-            ri  = i + self._scroll
-            row = pygame.Rect(self.rect.x+2, ry, self.rect.w-4, self.ROW)
-            if ri == self.selected:
-                pygame.draw.rect(surf, C["sel"], row)
-                tc = C["sel_t"]
-            elif row.collidepoint(mx, my):
-                pygame.draw.rect(surf, C["hover_bg"], row)
-                tc = C["black"]
-            else:
-                tc = C["black"]
-            txt(surf, item, self._font, tc, self.rect.x + 6, ry + 3)
+        surf.set_clip(inner)
+
+        for i, line in enumerate(self._lines[self._scroll:self._scroll + self._vis()]):
+            ry = self.rect.y + self.PAD + i * self._lh
+            # Render text — already guaranteed to fit in _inner_w by _wrap
+            s = self._font.render(line, True, C["black"])
+            surf.blit(s, (self.rect.x + self.PAD + 2, ry))
+
         surf.set_clip(clip)

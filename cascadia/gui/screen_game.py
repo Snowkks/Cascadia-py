@@ -31,10 +31,10 @@ from cascadia.utils import hex_to_pixel, pixel_to_hex, draw_circle_token
 # ── Layout constants ── (change these to tune, they won't overlap)
 TH   = 26          # title bar height
 STH  = 26          # status bar height
-LW   = 220         # left panel width
-RW   = 240         # right panel width
+LW   = 210         # left panel width
+RW   = 300         # right panel width  ← wider
 BX   = LW          # board left edge
-BW   = W - LW - RW # board width  (= 820)
+BW   = W - LW - RW # board width  (= 770)
 BCX  = BX + BW//2  # board centre x
 BCY  = TH + (H - TH - STH)//2  # board centre y
 
@@ -42,12 +42,11 @@ BCY  = TH + (H - TH - STH)//2  # board centre y
 RX   = W - RW
 
 # Market slots: 4 rows inside right panel
-# Each slot: tile card left, token chip right
 MK_X     = RX + 6
-MK_TW    = RW - 72   # tile card width
-MK_TOK_X = RX + RW - 60  # token chip x
-MK_TOK_W = 54
-MK_SLOT_H= 68        # height of each market row
+MK_TW    = RW - 76   # tile card width
+MK_TOK_X = RX + RW - 68  # token chip x
+MK_TOK_W = 60
+MK_SLOT_H= 72        # height of each market row
 MK_TOP   = TH + 36  # first slot y (below "Market" header)
 
 # Log below market slots
@@ -109,10 +108,10 @@ class GameScreen:
             self._mk_tile_rects.append(pygame.Rect(MK_X, y+4, MK_TW, MK_SLOT_H-8))
             self._mk_tok_rects.append(pygame.Rect(MK_TOK_X, y+12, MK_TOK_W, MK_SLOT_H-24))
 
-        # Log
-        self._log  = ScrollList(pygame.Rect(RX+4, LOG_Y, RW-8, LOG_H), fsize=12)
+        # Log — full panel width, just 4px padding each side
+        self._log  = ScrollList(pygame.Rect(RX+4, LOG_Y, RW-8, LOG_H), fsize=13)
         self._log_n = 0
-        for m in engine.log[-40:]: self._log.items.append(m)
+        for m in engine.log[-40:]: self._log.append(m)
         self._log_n = len(engine.log)
 
         # Action buttons (right panel, above status bar)
@@ -139,13 +138,8 @@ class GameScreen:
 
     def _sync_log(self):
         for m in self._eng.log[self._log_n:]:
-            self._log.items.append(m)
-            if len(self._log.items) > 120:
-                self._log.items = self._log.items[-120:]
+            self._log.append(m)
         self._log_n = len(self._eng.log)
-        # auto-scroll to bottom
-        vis = self._log._vis()
-        self._log._scroll = max(0, len(self._log.items) - vis)
 
     # ── actions ───────────────────────────────────────────────────────────────
     def _do_discard(self):
@@ -349,6 +343,33 @@ class GameScreen:
         # Tile count
         txt(surf, f"Board: {len(eng.current_player.board)} tiles",
             self._f_sm, C["muted"], 8, y)
+        y += 18
+
+        hrule(surf, y, 4, LW-4); y += 6
+
+        # ── Wildlife legend ────────────────────────────────────────────────
+        txt(surf, "Wildlife key:", self._f_sm, C["muted"], 8, y); y += 16
+        for w, col in W_COLORS.items():
+            pygame.draw.rect(surf, col,        (10, y+2, 10, 10))
+            pygame.draw.rect(surf, C["black"], (10, y+2, 10, 10), 1)
+            txt(surf, f"= {w.capitalize()}", self._f_sm, C["black"], 24, y+1)
+            y += 16
+
+        y += 4
+        pygame.draw.circle(surf, (255, 215, 0), (14, y+6), 5)
+        pygame.draw.circle(surf, C["black"],    (14, y+6), 5, 1)
+        txt(surf, "= Keystone (1 animal only)", self._f_sm, C["black"], 24, y+1)
+        y += 18
+
+        tip_rect = pygame.Rect(4, y, LW-8, 44)
+        pygame.draw.rect(surf, (255, 255, 210), tip_rect)
+        bevel(surf, tip_rect, raised=False)
+        for i, line in enumerate([
+            "Habitat & wildlife are",
+            "independent — any tile",
+            "can accept any animal!",
+        ]):
+            txt(surf, line, self._f_sm, (80, 60, 0), 8, y+2+i*13)
 
         self._btn_menu.draw(surf)
 
