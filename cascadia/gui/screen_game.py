@@ -606,7 +606,7 @@ class GameScreen:
             pygame.draw.line(surf, (140,160,220), (r.x, r.y),        (r.x, r.bottom-2))
             pygame.draw.line(surf, (40, 50, 100), (r.x, r.bottom-1), (r.right-1,r.bottom-1))
             pygame.draw.line(surf, (40, 50, 100), (r.right-1,r.y),   (r.right-1,r.bottom-1))
-            s = font(13,True).render("Return Token to Bag  (no penalty)", True, (255,255,255))
+            s = font(13,True).render("Return Token to Bag", True, (255,255,255))
             surf.blit(s, (r.x+(r.w-s.get_width())//2, r.y+(r.h-s.get_height())//2))
 
         elif phase == Phase.SELECT_PAIR and eng.current_player.nature_tokens > 0:
