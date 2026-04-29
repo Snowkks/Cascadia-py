@@ -74,9 +74,8 @@ EOF
           ];
 
           shellHook = ''
-            echo "🌲 Cascadia dev shell"
+            echo "  Cascadia"
             echo "  python main.py           – run game (auto XWayland on Wayland)"
-            echo "  python main.py --wayland – native Wayland SDL"
             echo "  pytest tests/ -v         – run unit tests"
 
             # Auto-switch to XWayland if under Wayland
