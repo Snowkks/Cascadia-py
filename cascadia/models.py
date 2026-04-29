@@ -1,12 +1,6 @@
 """
 models.py - Core data models for Cascadia.
-
-Classes:
-    HexTile     – one landscape hex tile (habitat(s) + accepted wildlife)
-    WildlifeToken – a single wildlife token placed on a tile
-    Player      – player state (board, tokens, score, nature tokens)
 """
-
 from __future__ import annotations
 import random
 from dataclasses import dataclass, field
@@ -14,29 +8,20 @@ from typing import Optional, List, Dict, Tuple, Set
 from cascadia.constants import HABITATS, WILDLIFE
 
 
-# ── Hex coordinate helpers ────────────────────────────────────────────────────
-
 def hex_neighbors(q: int, r: int) -> List[Tuple[int, int]]:
-    """Return the 6 axial-coordinate neighbors of hex (q, r)."""
     directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
     return [(q + dq, r + dr) for dq, dr in directions]
 
-
-# ── HexTile ───────────────────────────────────────────────────────────────────
 
 @dataclass
 class HexTile:
     """
     One hexagonal landscape tile.
 
-    Attributes:
-        tile_id       Unique identifier string
-        habitats      1 or 2 habitat types this tile contains
-        accepts       Set of wildlife types that may be placed here
-        keystone      If True, only one wildlife type is accepted (keystone tile)
-        token         Wildlife token currently placed (or None)
-        q, r          Axial grid coordinates in the player's board
-        is_starter    True if this tile is part of the starting wedge
+    rotation  – 0-5, rotates the dual-habitat split display.
+                Pure cosmetic for single-habitat tiles; for dual-habitat tiles
+                it controls which half faces which direction visually.
+                Does NOT affect gameplay (accepts/habitats don't change).
     """
     tile_id:    str
     habitats:   List[str]
@@ -46,20 +31,26 @@ class HexTile:
     q:          int = 0
     r:          int = 0
     is_starter: bool = False
+    rotation:   int = 0        # 0-5 in steps of 60°
+
+    def rotate_cw(self):
+        """Rotate tile 60° clockwise."""
+        self.rotation = (self.rotation + 1) % 6
+
+    def rotate_ccw(self):
+        """Rotate tile 60° counter-clockwise."""
+        self.rotation = (self.rotation - 1) % 6
 
     def can_accept(self, wildlife_type: str) -> bool:
-        """Return True if this tile has no token and accepts the given wildlife."""
         return self.token is None and wildlife_type in self.accepts
 
     def place_token(self, token: "WildlifeToken") -> bool:
-        """Attempt to place a token. Returns True on success."""
         if not self.can_accept(token.wildlife_type):
             return False
         self.token = token
         return True
 
     def remove_token(self) -> Optional["WildlifeToken"]:
-        """Remove and return the placed token, or None if empty."""
         t = self.token
         self.token = None
         return t
@@ -74,17 +65,8 @@ class HexTile:
         return isinstance(other, HexTile) and self.tile_id == other.tile_id
 
 
-# ── WildlifeToken ─────────────────────────────────────────────────────────────
-
 @dataclass
 class WildlifeToken:
-    """
-    One wildlife token (bear, elk, salmon, hawk, or fox).
-
-    Attributes:
-        token_id      Unique identifier
-        wildlife_type One of the 5 wildlife species
-    """
     token_id:     str
     wildlife_type: str
 
@@ -95,21 +77,7 @@ class WildlifeToken:
         return isinstance(other, WildlifeToken) and self.token_id == other.token_id
 
 
-# ── Player ────────────────────────────────────────────────────────────────────
-
 class Player:
-    """
-    Holds all state for one player.
-
-    Attributes:
-        player_id       Integer id (0-based)
-        name            Display name
-        board           Dict mapping (q, r) -> HexTile
-        nature_tokens   Spending currency for special actions
-        score           Cached final score
-        color           Display colour tuple
-    """
-
     def __init__(self, player_id: int, name: str, color: Tuple[int, int, int]):
         self.player_id    = player_id
         self.name         = name
@@ -118,13 +86,7 @@ class Player:
         self.nature_tokens: int = 1
         self.score: int = 0
 
-    # ── board helpers ──────────────────────────────────────────────────────────
-
     def add_tile(self, tile: HexTile, q: int, r: int) -> bool:
-        """
-        Place a tile at (q, r) if the cell is empty and adjacent to an
-        existing tile (or the board is empty).
-        """
         if (q, r) in self.board:
             return False
         if self.board and not self._is_adjacent(q, r):
@@ -141,7 +103,6 @@ class Player:
         return False
 
     def valid_placements(self) -> List[Tuple[int, int]]:
-        """Return all grid cells where a new tile can legally be placed."""
         if not self.board:
             return [(0, 0)]
         candidates: Set[Tuple[int, int]] = set()
@@ -155,7 +116,6 @@ class Player:
         return self.board.get((q, r))
 
     def tiles_accepting(self, wildlife_type: str) -> List[HexTile]:
-        """Return all tiles on board that can still accept the given wildlife."""
         return [t for t in self.board.values() if t.can_accept(wildlife_type)]
 
     def placed_tokens(self) -> List[WildlifeToken]:
@@ -173,8 +133,6 @@ class Player:
             for h in tile.habitats:
                 counts[h] += 1
         return counts
-
-    # ── nature token actions ───────────────────────────────────────────────────
 
     def spend_nature_token(self) -> bool:
         if self.nature_tokens > 0:

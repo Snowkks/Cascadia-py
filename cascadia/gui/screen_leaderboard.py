@@ -158,7 +158,8 @@ class LeaderboardScreen:
         ry += 24
 
         heads = [("Player",8),("Bear",180),("Elk",240),("Salmon",300),
-                 ("Hawk",365),("Fox",420),("Habitat",475),("Nature",545),("TOTAL",620)]
+                 ("Hawk",365),("Fox",420),("Habitat",475),("Majority",540),
+                 ("Nature",615),("TOTAL",675)]
         for label, x in heads:
             txt(surf, label, self._f_hdr, C["muted"], x, ry)
         ry += 18
@@ -177,8 +178,9 @@ class LeaderboardScreen:
                 (row.get("hawk_score",0),    365),
                 (row.get("fox_score",0),     420),
                 (row.get("habitat_score",0), 475),
-                (row.get("nature_tokens",0), 545),
-                (row.get("total_score",0),   620),
+                (row.get("habitat_majority",0), 540),
+                (row.get("nature_tokens",0), 615),
+                (row.get("total_score",0),   675),
             ]
             tc = C["sel"] if row.get("is_winner") else C["black"]
             for v, x in vals:

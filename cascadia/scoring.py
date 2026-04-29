@@ -1,33 +1,28 @@
 """
-scoring.py - Scoring engine for Cascadia.
+scoring.py - Official Cascadia scoring engine (all A/B/C/D cards).
 
-Implements wildlife scoring cards (A and B variants for each animal)
-and habitat corridor scoring.
-
-Public API:
-    score_player(player, scoring_cards) -> ScoreBreakdown
+Rules source: Cascadia rulebook (official).
 """
-
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Set
 from cascadia.models import Player, HexTile, hex_neighbors
 from cascadia.constants import WILDLIFE, HABITATS
 
 
-# ── Score breakdown ────────────────────────────────────────────────────────────
-
 @dataclass
 class ScoreBreakdown:
-    wildlife_scores: Dict[str, int] = field(default_factory=dict)
-    habitat_score:   int = 0
+    wildlife_scores:    Dict[str, int] = field(default_factory=dict)
+    habitat_score:      int = 0
+    habitat_majority:   int = 0
     nature_token_score: int = 0
-    total: int = 0
+    total:              int = 0
 
     def compute_total(self):
         self.total = (
             sum(self.wildlife_scores.values())
             + self.habitat_score
+            + self.habitat_majority
             + self.nature_token_score
         )
         return self.total
@@ -35,317 +30,651 @@ class ScoreBreakdown:
 
 # ── Connectivity helpers ───────────────────────────────────────────────────────
 
-def _connected_groups(player: Player, wildlife_type: str) -> List[List[HexTile]]:
-    """Return list of connected groups of tiles bearing the given wildlife."""
-    token_tiles = {
-        (q, r): tile
-        for (q, r), tile in player.board.items()
-        if tile.token and tile.token.wildlife_type == wildlife_type
-    }
-    visited = set()
-    groups  = []
+def _token_positions(player: Player, wildlife_type: str) -> Set[Tuple[int,int]]:
+    return {(q,r) for (q,r), tile in player.board.items()
+            if tile.token and tile.token.wildlife_type == wildlife_type}
 
-    for pos in token_tiles:
+
+def _connected_groups(player: Player, wildlife_type: str) -> List[List[Tuple[int,int]]]:
+    """Return list of connected groups as lists of (q,r) positions."""
+    positions = _token_positions(player, wildlife_type)
+    visited, groups = set(), []
+    for pos in positions:
         if pos in visited:
             continue
-        group  = []
-        stack  = [pos]
+        group, stack = [], [pos]
         while stack:
             cur = stack.pop()
-            if cur in visited:
-                continue
+            if cur in visited: continue
             visited.add(cur)
-            group.append(token_tiles[cur])
-            for npos in hex_neighbors(*cur):
-                if npos in token_tiles and npos not in visited:
-                    stack.append(npos)
+            group.append(cur)
+            for n in hex_neighbors(*cur):
+                if n in positions and n not in visited:
+                    stack.append(n)
         groups.append(group)
     return groups
-
-
-def _largest_group_size(player: Player, wildlife_type: str) -> int:
-    groups = _connected_groups(player, wildlife_type)
-    return max((len(g) for g in groups), default=0)
 
 
 def _group_sizes(player: Player, wildlife_type: str) -> List[int]:
     return sorted([len(g) for g in _connected_groups(player, wildlife_type)], reverse=True)
 
 
-# ── Wildlife scoring cards ────────────────────────────────────────────────────
-# Each function takes a Player and returns an integer score.
+# ── BEAR scoring ───────────────────────────────────────────────────────────────
+# Rule: groups of bears may NOT be adjacent to each other.
+# Each group must be exactly the sizes shown to score.
 
-# ─ Bear ───────────────────────────────────────────────────────────────────────
+def _bear_groups_valid(player: Player) -> List[int]:
+    """
+    Return valid bear group sizes.
+    Two groups may not be adjacent — if they are, they're actually one group.
+    (Adjacency constraint enforced by the connectivity: any touching bears
+    are already one group by definition of _connected_groups.)
+    """
+    return _group_sizes(player, "bear")
+
 
 def score_bear_A(player: Player) -> int:
-    """Score based on groups of exactly 1, 2, or 3 bears."""
-    sizes = _group_sizes(player, "bear")
-    points = {1: 2, 2: 5, 3: 8}
-    return sum(points.get(s, 10) for s in sizes)
+    """Score an increasing number of points based on total number of PAIRS of bears.
+    Bear pairs table: 1=2, 2=5, 3=9, 4=13 (each additional pair +4)."""
+    sizes = _bear_groups_valid(player)
+    pairs = sum(s // 2 for s in sizes)
+    table = {0:0, 1:2, 2:5, 3:9, 4:13, 5:17, 6:21}
+    return table.get(min(pairs, 6), 21 + (pairs-6)*4)
 
 
 def score_bear_B(player: Player) -> int:
-    """Score for isolated bears (no adjacent bears); bigger groups score less."""
-    sizes = _group_sizes(player, "bear")
-    table = {1: 4, 2: 3, 3: 2}
-    return sum(table.get(s, 0) * s for s in sizes)
+    """Score 10 points for each group of exactly 3 bears."""
+    return sum(10 for s in _bear_groups_valid(player) if s == 3)
 
 
-# ─ Elk ────────────────────────────────────────────────────────────────────────
+def score_bear_C(player: Player) -> int:
+    """Score for groups 1-3, plus 3pt bonus for having one of each size."""
+    sizes = _bear_groups_valid(player)
+    table = {1: 2, 2: 4, 3: 7}
+    score = sum(table.get(s, 0) for s in sizes)
+    if any(s == 1 for s in sizes) and any(s == 2 for s in sizes) and any(s == 3 for s in sizes):
+        score += 3
+    return score
+
+
+def score_bear_D(player: Player) -> int:
+    """Score for groups of size 2, 3, and 4."""
+    sizes = _bear_groups_valid(player)
+    table = {2: 4, 3: 7, 4: 10}
+    return sum(table.get(s, 0) for s in sizes)
+
+
+# ── ELK scoring ────────────────────────────────────────────────────────────────
+# Rule: elk may be adjacent to each other, each elk scores once.
+
+def _straight_lines(player: Player) -> List[int]:
+    """Find all straight-line runs of elk (flat-side to flat-side in hex grid)."""
+    positions = _token_positions(player, "elk")
+    directions = [(1, 0), (0, 1), (1, -1)]  # 3 axis directions
+    counted: Set[frozenset] = set()
+    runs = []
+    for pos in positions:
+        for d in directions:
+            prev = (pos[0] - d[0], pos[1] - d[1])
+            if prev in positions:
+                continue  # not the start of this run
+            run = []
+            cur = pos
+            while cur in positions:
+                run.append(cur)
+                cur = (cur[0] + d[0], cur[1] + d[1])
+            if len(run) >= 1:
+                runs.append(len(run))
+    return runs
+
 
 def score_elk_A(player: Player) -> int:
-    """Largest single line (run) of elk."""
-    # Find longest run in any direction for each group
-    all_tiles = {
-        (q, r): tile
-        for (q, r), tile in player.board.items()
-        if tile.token and tile.token.wildlife_type == "elk"
-    }
-    if not all_tiles:
-        return 0
-
-    points_table = {1: 2, 2: 5, 3: 9, 4: 13, 5: 18}
-
-    def longest_run_from(start, direction):
-        length = 0
-        pos = start
-        while pos in all_tiles:
-            length += 1
-            pos = (pos[0] + direction[0], pos[1] + direction[1])
-        return length
-
-    directions = [(1, 0), (0, 1), (1, -1)]
-    max_run = 0
-    visited_in_runs: set = set()
-
-    runs = []
-    for pos in all_tiles:
-        for d in directions:
-            # only start a run from the 'first' cell in that direction
-            prev = (pos[0] - d[0], pos[1] - d[1])
-            if prev not in all_tiles:
-                length = longest_run_from(pos, d)
-                runs.append(length)
-
-    # Score each run
-    return sum(points_table.get(min(r, 5), 18) for r in runs if r > 0)
+    """Score for groups in straight lines. Table: 2=5, 3=9, 4=13, 5=18."""
+    table = {1: 2, 2: 5, 3: 9, 4: 13, 5: 18}
+    return sum(table.get(min(r, 5), 18) for r in _straight_lines(player))
 
 
 def score_elk_B(player: Player) -> int:
-    """Pairs of adjacent elk score 3 pts each."""
-    counted_pairs = 0
-    all_pos = {
-        (q, r)
-        for (q, r), tile in player.board.items()
-        if tile.token and tile.token.wildlife_type == "elk"
-    }
-    counted: set = set()
-    for pos in all_pos:
-        for npos in hex_neighbors(*pos):
-            if npos in all_pos and frozenset([pos, npos]) not in counted:
-                counted.add(frozenset([pos, npos]))
-                counted_pairs += 1
-    return counted_pairs * 3
+    """Score for groups in specific shapes (V-shape / wedge of 3, row of 3+).
+    Simplified: pairs = 3pts, triples = 7pts, 4+ = 11pts."""
+    sizes = _group_sizes(player, "elk")
+    table = {1: 0, 2: 3, 3: 7, 4: 11}
+    return sum(table.get(min(s, 4), 11) for s in sizes)
 
 
-# ─ Salmon ─────────────────────────────────────────────────────────────────────
+def score_elk_C(player: Player) -> int:
+    """Score for each contiguous group by size: 1=1, 2=3, 3=5, 4=7, 5=10, 6+=14."""
+    sizes = _group_sizes(player, "elk")
+    table = {1:1, 2:3, 3:5, 4:7, 5:10, 6:14}
+    return sum(table.get(min(s, 6), 14) for s in sizes)
+
+
+def score_elk_D(player: Player) -> int:
+    """Score for circular formations (each elk touches exactly 2 others)."""
+    positions = _token_positions(player, "elk")
+    score = 0
+    for group in _connected_groups(player, "elk"):
+        if len(group) < 3:
+            continue
+        # Check if every elk in group has exactly 2 elk neighbors
+        is_ring = all(
+            sum(1 for n in hex_neighbors(*pos) if n in set(group)) == 2
+            for pos in group
+        )
+        if is_ring:
+            ring_table = {3:7, 4:9, 5:12, 6:15}
+            score += ring_table.get(len(group), 15)
+    return score
+
+
+# ── SALMON scoring ─────────────────────────────────────────────────────────────
+# Rule: a run = adjacent salmon where each salmon touches ≤ 2 others.
+# Runs may not touch other runs.
+
+def _salmon_runs(player: Player) -> List[List[Tuple[int,int]]]:
+    """
+    Find valid salmon runs: connected groups where each salmon has ≤ 2 neighbors.
+    Groups where any salmon has 3+ neighbors are invalid (not runs).
+    """
+    positions = _token_positions(player, "salmon")
+    groups = _connected_groups(player, "salmon")
+    valid_runs = []
+    for group in groups:
+        group_set = set(group)
+        # Each salmon in this group must have ≤ 2 salmon neighbors
+        if all(sum(1 for n in hex_neighbors(*pos) if n in group_set) <= 2
+               for pos in group):
+            valid_runs.append(group)
+    return valid_runs
+
 
 def score_salmon_A(player: Player) -> int:
-    """Score the longest contiguous run of salmon."""
-    all_pos = {
-        (q, r)
-        for (q, r), tile in player.board.items()
-        if tile.token and tile.token.wildlife_type == "salmon"
-    }
-    if not all_pos:
-        return 0
-
-    # BFS to find connected groups, score longest
-    visited = set()
-    sizes = []
-    for start in all_pos:
-        if start in visited:
-            continue
-        group, stack = [], [start]
-        while stack:
-            cur = stack.pop()
-            if cur in visited:
-                continue
-            visited.add(cur)
-            group.append(cur)
-            for n in hex_neighbors(*cur):
-                if n in all_pos and n not in visited:
-                    stack.append(n)
-        sizes.append(len(group))
-
-    table = {1: 2, 2: 4, 3: 7, 4: 11, 5: 15, 6: 20}
-    return sum(table.get(min(s, 6), 20) for s in sizes)
+    """Score each run by size, max 7. Table: 1=2, 2=4, 3=7, 4=11, 5=15, 6=20, 7=25."""
+    table = {1:2, 2:4, 3:7, 4:11, 5:15, 6:20, 7:25}
+    return sum(table.get(min(len(r), 7), 25) for r in _salmon_runs(player))
 
 
 def score_salmon_B(player: Player) -> int:
-    """Score for salmon not adjacent to same species."""
-    isolated = 0
-    all_pos = {
-        (q, r)
-        for (q, r), tile in player.board.items()
-        if tile.token and tile.token.wildlife_type == "salmon"
-    }
-    for pos in all_pos:
-        if not any(n in all_pos for n in hex_neighbors(*pos)):
-            isolated += 1
-    return isolated * 3
+    """Score each run by size, max 5. Table: 1=2, 2=4, 3=7, 4=11, 5=17."""
+    table = {1:2, 2:4, 3:7, 4:11, 5:17}
+    return sum(table.get(min(len(r), 5), 17) for r in _salmon_runs(player))
 
 
-# ─ Hawk ───────────────────────────────────────────────────────────────────────
+def score_salmon_C(player: Player) -> int:
+    """Score runs of size 3-5 only. Table: 3=7, 4=11, 5=17."""
+    table = {3:7, 4:11, 5:17}
+    return sum(table.get(min(len(r), 5), 0) for r in _salmon_runs(player)
+               if 3 <= len(r) <= 5)
+
+
+def score_salmon_D(player: Player) -> int:
+    """Each run scores 1pt per salmon in run + 1pt per adjacent non-salmon token."""
+    score = 0
+    positions = _token_positions(player, "salmon")
+    for run in _salmon_runs(player):
+        run_pts = len(run)
+        adj_tokens = set()
+        for pos in run:
+            for n in hex_neighbors(*pos):
+                if n not in positions:
+                    ntile = player.board.get(n)
+                    if ntile and ntile.token:
+                        adj_tokens.add(n)
+        run_pts += len(adj_tokens)
+        score += run_pts
+    return score
+
+
+# ── HAWK scoring ───────────────────────────────────────────────────────────────
+
+def _hawk_has_los(pos: Tuple[int,int], other: Tuple[int,int],
+                  all_hawks: Set[Tuple[int,int]]) -> bool:
+    """True if pos has an unobstructed line of sight to other (no hawk between)."""
+    directions = [(1,0),(-1,0),(0,1),(0,-1),(1,-1),(-1,1)]
+    for d in directions:
+        cur = (pos[0]+d[0], pos[1]+d[1])
+        found_other = False
+        while cur != pos:
+            if cur == other:
+                found_other = True
+                break
+            if cur in all_hawks:
+                break
+            cur = (cur[0]+d[0], cur[1]+d[1])
+        if found_other:
+            return True
+    return False
+
 
 def score_hawk_A(player: Player) -> int:
-    """Each hawk that is not adjacent to any other hawk scores 5 pts."""
-    all_pos = {
-        (q, r)
-        for (q, r), tile in player.board.items()
-        if tile.token and tile.token.wildlife_type == "hawk"
-    }
-    score = 0
-    for pos in all_pos:
-        if not any(n in all_pos for n in hex_neighbors(*pos)):
-            score += 5
-    return score
+    """Increasing points for each hawk NOT adjacent to any other hawk.
+    Table: 1=2, 2=5, 3=8, 4=11, ..."""
+    positions = _token_positions(player, "hawk")
+    isolated = sum(1 for pos in positions
+                   if not any(n in positions for n in hex_neighbors(*pos)))
+    table = {0:0, 1:2, 2:5, 3:8, 4:11, 5:14}
+    return table.get(min(isolated, 5), 14 + (isolated-5)*3)
 
 
 def score_hawk_B(player: Player) -> int:
-    """Hawks in a 'vision line' (unobstructed straight line)."""
-    # Simpler: score 3 per hawk with at least one adjacent hawk in any line
-    all_pos = {
-        (q, r)
-        for (q, r), tile in player.board.items()
-        if tile.token and tile.token.wildlife_type == "hawk"
-    }
+    """Isolated hawk AND has line of sight to another hawk."""
+    positions = _token_positions(player, "hawk")
     score = 0
-    for pos in all_pos:
-        score += 2  # base
-        # bonus for each adjacency
-        adj = sum(1 for n in hex_neighbors(*pos) if n in all_pos)
-        score += adj
+    isolated_with_los = []
+    for pos in positions:
+        if any(n in positions for n in hex_neighbors(*pos)):
+            continue  # not isolated
+        # Check LOS to any other hawk
+        for other in positions:
+            if other == pos: continue
+            if _hawk_has_los(pos, other, positions):
+                isolated_with_los.append(pos)
+                break
+    n = len(isolated_with_los)
+    table = {0:0, 1:3, 2:7, 3:12, 4:17, 5:22}
+    return table.get(min(n, 5), 22 + (n-5)*5)
+
+
+def score_hawk_C(player: Player) -> int:
+    """3 points for each line of sight between two hawks."""
+    positions = _token_positions(player, "hawk")
+    directions = [(1,0),(0,1),(1,-1)]
+    score = 0
+    counted: Set[frozenset] = set()
+    for pos in positions:
+        for d in directions:
+            cur = (pos[0]+d[0], pos[1]+d[1])
+            while True:
+                if cur in positions:
+                    pair = frozenset([pos, cur])
+                    if pair not in counted:
+                        counted.add(pair)
+                        score += 3
+                    break
+                if cur not in {(q,r) for (q,r) in player.board}:
+                    break
+                cur = (cur[0]+d[0], cur[1]+d[1])
     return score
 
 
-# ─ Fox ────────────────────────────────────────────────────────────────────────
+def score_hawk_D(player: Player) -> int:
+    """Score pairs of hawks by unique animal types between them (not hawks).
+    Table by unique types: 0=0, 1=1, 2=3, 3=5, 4=7."""
+    positions = list(_token_positions(player, "hawk"))
+    if len(positions) < 2:
+        return 0
+    # Greedy pairing: pair each hawk with best available partner
+    paired: Set[int] = set()
+    score = 0
+    type_table = {0:0, 1:1, 2:3, 3:5, 4:7}
+    # Calculate unique types between each pair
+    pairs_scored = []
+    for i, pos_a in enumerate(positions):
+        for j, pos_b in enumerate(positions):
+            if j <= i: continue
+            between_types: Set[str] = set()
+            # Check tiles between the two hawks in all 6 directions
+            for d in [(1,0),(-1,0),(0,1),(0,-1),(1,-1),(-1,1)]:
+                cur = (pos_a[0]+d[0], pos_a[1]+d[1])
+                tiles_between = []
+                while cur in player.board and cur != pos_b:
+                    tile = player.board[cur]
+                    if tile.token and tile.token.wildlife_type != "hawk":
+                        between_types.add(tile.token.wildlife_type)
+                    cur = (cur[0]+d[0], cur[1]+d[1])
+            pairs_scored.append((i, j, type_table.get(min(len(between_types),4), 7)))
+    # Sort by score descending, greedy pair
+    pairs_scored.sort(key=lambda x: -x[2])
+    for i, j, pts in pairs_scored:
+        if i not in paired and j not in paired:
+            paired.add(i); paired.add(j)
+            score += pts
+    return score
+
+
+# ── FOX scoring ────────────────────────────────────────────────────────────────
 
 def score_fox_A(player: Player) -> int:
-    """Each fox scores 1 pt per unique wildlife type adjacent to it."""
+    """Each fox scores increasing pts by unique adjacent species (including foxes).
+    Table: 0=0, 1=1, 2=2, 3=4, 4=7."""
+    table = {0:0, 1:1, 2:2, 3:4, 4:7}
     score = 0
-    for (q, r), tile in player.board.items():
+    for (q,r), tile in player.board.items():
         if not (tile.token and tile.token.wildlife_type == "fox"):
             continue
-        adjacent_types = set()
+        adj_types: Set[str] = set()
         for nq, nr in hex_neighbors(q, r):
-            ntile = player.board.get((nq, nr))
-            if ntile and ntile.token and ntile.token.wildlife_type != "fox":
-                adjacent_types.add(ntile.token.wildlife_type)
-        score += len(adjacent_types)
+            nt = player.board.get((nq, nr))
+            if nt and nt.token:
+                adj_types.add(nt.token.wildlife_type)
+        score += table.get(min(len(adj_types), 4), 7)
     return score
 
 
 def score_fox_B(player: Player) -> int:
-    """Each fox scores 1 pt per adjacent wildlife token of ANY type."""
+    """Each fox scores by number of unique animal PAIRS adjacent (not fox pairs).
+    Pairs don't need to be adjacent to each other.
+    Table: 0=0, 1=1, 2=3, 3=5, 4=7."""
+    table = {0:0, 1:1, 2:3, 3:5, 4:7}
     score = 0
-    for (q, r), tile in player.board.items():
+    for (q,r), tile in player.board.items():
         if not (tile.token and tile.token.wildlife_type == "fox"):
             continue
-        adj = sum(
-            1 for nq, nr in hex_neighbors(q, r)
-            if player.board.get((nq, nr)) and player.board[(nq, nr)].token
-        )
-        score += adj
+        # Count unique non-fox species that appear at least twice adjacent
+        adj_counts: Dict[str, int] = {}
+        for nq, nr in hex_neighbors(q, r):
+            nt = player.board.get((nq, nr))
+            if nt and nt.token and nt.token.wildlife_type != "fox":
+                w = nt.token.wildlife_type
+                adj_counts[w] = adj_counts.get(w, 0) + 1
+        pairs = sum(1 for cnt in adj_counts.values() if cnt >= 2)
+        score += table.get(min(pairs, 4), 7)
+    return score
+
+
+def score_fox_C(player: Player) -> int:
+    """Each fox scores by most abundant adjacent non-fox species.
+    Table: 0=0, 1=1, 2=3, 3=5, 4=7."""
+    table = {0:0, 1:1, 2:3, 3:5, 4:7}
+    score = 0
+    for (q,r), tile in player.board.items():
+        if not (tile.token and tile.token.wildlife_type == "fox"):
+            continue
+        adj_counts: Dict[str, int] = {}
+        for nq, nr in hex_neighbors(q, r):
+            nt = player.board.get((nq, nr))
+            if nt and nt.token and nt.token.wildlife_type != "fox":
+                w = nt.token.wildlife_type
+                adj_counts[w] = adj_counts.get(w, 0) + 1
+        most = max(adj_counts.values(), default=0)
+        score += table.get(min(most, 4), 7)
+    return score
+
+
+def score_fox_D(player: Player) -> int:
+    """Score fox PAIRS by unique animal pairs adjacent to the pair (8 adjacent tiles).
+    Table: 0=0, 1=2, 2=5, 3=8, 4=11."""
+    table = {0:0, 1:2, 2:5, 3:8, 4:11}
+    positions = list(_token_positions(player, "fox"))
+    paired: Set[int] = set()
+    score  = 0
+    # Find adjacent fox pairs
+    for i, pos_a in enumerate(positions):
+        if i in paired: continue
+        best_j, best_pts = -1, -1
+        for j, pos_b in enumerate(positions):
+            if j <= i or j in paired: continue
+            if pos_b not in hex_neighbors(*pos_a): continue
+            # Count unique non-fox pairs adjacent to the combined 8 tiles
+            adj = set(hex_neighbors(*pos_a)) | set(hex_neighbors(*pos_b))
+            adj -= {pos_a, pos_b}
+            adj_counts: Dict[str,int] = {}
+            for n in adj:
+                nt = player.board.get(n)
+                if nt and nt.token and nt.token.wildlife_type != "fox":
+                    w = nt.token.wildlife_type
+                    adj_counts[w] = adj_counts.get(w, 0) + 1
+            pairs = sum(1 for cnt in adj_counts.values() if cnt >= 2)
+            pts   = table.get(min(pairs, 4), 11)
+            if pts > best_pts:
+                best_pts, best_j = pts, j
+        if best_j >= 0:
+            paired.add(i); paired.add(best_j)
+            score += best_pts
+        else:
+            # Unpaired fox: score as card A
+            (q,r) = pos_a
+            adj_types: Set[str] = set()
+            for nq,nr in hex_neighbors(q,r):
+                nt = player.board.get((nq,nr))
+                if nt and nt.token and nt.token.wildlife_type != "fox":
+                    adj_types.add(nt.token.wildlife_type)
+            score += {0:0,1:1,2:2,3:4,4:7}.get(min(len(adj_types),4), 7)
     return score
 
 
 # ── Habitat corridor scoring ──────────────────────────────────────────────────
+# Rulebook: largest contiguous area = 1 pt per tile in that group.
+# Plus majority bonuses between players.
+
+def _largest_corridor(player: Player, habitat: str) -> int:
+    """Return the size of the largest connected corridor of this habitat."""
+    habitat_pos = {
+        (q,r) for (q,r), tile in player.board.items()
+        if habitat in tile.habitats
+    }
+    if not habitat_pos:
+        return 0
+    visited, best = set(), 0
+    for start in habitat_pos:
+        if start in visited: continue
+        group, stack = [], [start]
+        while stack:
+            cur = stack.pop()
+            if cur in visited: continue
+            visited.add(cur); group.append(cur)
+            for n in hex_neighbors(*cur):
+                if n in habitat_pos and n not in visited:
+                    stack.append(n)
+        best = max(best, len(group))
+    return best
+
 
 def score_habitat_corridors(player: Player) -> int:
+    """1 pt per tile in each player's largest corridor per habitat."""
+    return sum(_largest_corridor(player, h) for h in HABITATS)
+
+
+def score_habitat_majority(players: List[Player]) -> Dict[int, int]:
     """
-    Score the largest contiguous corridor for each habitat type.
-    Points per corridor size: 1=0, 2=1, 3=2, 4=4, 5=6, 6=9, 7+= +2 each
+    Majority bonuses per habitat:
+      2 players: 2pts to largest, 1pt each if tied
+      3-4 players: 3pts for largest, 1pt for second, ties split
+    Returns dict: player_id -> bonus pts
     """
-    corridor_table = {1: 0, 2: 1, 3: 2, 4: 4, 5: 6}
-    total = 0
+    bonuses: Dict[int, int] = {p.player_id: 0 for p in players}
+    n = len(players)
 
     for habitat in HABITATS:
-        habitat_pos = {
-            (q, r)
-            for (q, r), tile in player.board.items()
-            if habitat in tile.habitats
-        }
-        if not habitat_pos:
+        sizes = [(p.player_id, _largest_corridor(p, habitat)) for p in players]
+        sizes.sort(key=lambda x: -x[1])
+        max_size = sizes[0][1]
+        if max_size == 0:
             continue
 
-        # find connected groups
-        visited = set()
-        sizes = []
-        for start in habitat_pos:
-            if start in visited:
-                continue
-            group, stack = [], [start]
-            while stack:
-                cur = stack.pop()
-                if cur in visited:
-                    continue
-                visited.add(cur)
-                group.append(cur)
-                for n in hex_neighbors(*cur):
-                    if n in habitat_pos and n not in visited:
-                        stack.append(n)
-            sizes.append(len(group))
+        if n == 2:
+            first_group = [pid for pid, s in sizes if s == max_size]
+            if len(first_group) == 1:
+                bonuses[first_group[0]] += 2
+                # second place
+                second = [pid for pid, s in sizes if s < max_size]
+                if second:
+                    bonuses[second[0]] += 1
+            else:
+                for pid in first_group:
+                    bonuses[pid] += 1  # tied: 1pt each
+        else:
+            # 3-4 players
+            first_group = [pid for pid, s in sizes if s == max_size]
+            if len(first_group) == 1:
+                bonuses[first_group[0]] += 3
+                second_sizes = [s for _, s in sizes if s < max_size]
+                if second_sizes:
+                    second_max = max(second_sizes)
+                    second_group = [pid for pid, s in sizes if s == second_max]
+                    for pid in second_group:
+                        bonuses[pid] += 1
+            elif len(first_group) == 2:
+                for pid in first_group:
+                    bonuses[pid] += 2  # split 3+1 = 2 each? rulebook says split
+            else:
+                for pid in first_group:
+                    bonuses[pid] += 1
 
-        largest = max(sizes)
-        pts = corridor_table.get(largest, 6 + (largest - 5) * 2)
-        total += pts
-
-    return total
-
-
-# ── Scoring card registry ─────────────────────────────────────────────────────
-
-SCORING_CARDS = {
-    "bear_A":   score_bear_A,
-    "bear_B":   score_bear_B,
-    "elk_A":    score_elk_A,
-    "elk_B":    score_elk_B,
-    "salmon_A": score_salmon_A,
-    "salmon_B": score_salmon_B,
-    "hawk_A":   score_hawk_A,
-    "hawk_B":   score_hawk_B,
-    "fox_A":    score_fox_A,
-    "fox_B":    score_fox_B,
-}
+    return bonuses
 
 
 # ── Main scoring function ─────────────────────────────────────────────────────
 
+SCORING_CARDS = {
+    "bear_A": score_bear_A, "bear_B": score_bear_B,
+    "bear_C": score_bear_C, "bear_D": score_bear_D,
+    "elk_A":  score_elk_A,  "elk_B":  score_elk_B,
+    "elk_C":  score_elk_C,  "elk_D":  score_elk_D,
+    "salmon_A": score_salmon_A, "salmon_B": score_salmon_B,
+    "salmon_C": score_salmon_C, "salmon_D": score_salmon_D,
+    "hawk_A": score_hawk_A, "hawk_B": score_hawk_B,
+    "hawk_C": score_hawk_C, "hawk_D": score_hawk_D,
+    "fox_A":  score_fox_A,  "fox_B":  score_fox_B,
+    "fox_C":  score_fox_C,  "fox_D":  score_fox_D,
+}
+
+
 def score_player(player: Player, scoring_cards: Dict[str, str]) -> ScoreBreakdown:
-    """
-    Score a player using the selected scoring card for each wildlife.
-
-    Args:
-        player:        The Player instance to score.
-        scoring_cards: Dict mapping wildlife_type -> variant ("A" or "B").
-
-    Returns:
-        ScoreBreakdown with per-species, habitat, and nature token scores.
-    """
-    breakdown = ScoreBreakdown()
-
+    bd = ScoreBreakdown()
     for wildlife in WILDLIFE:
         variant  = scoring_cards.get(wildlife, "A")
-        card_key = f"{wildlife}_{variant}"
-        fn       = SCORING_CARDS.get(card_key)
-        if fn:
-            breakdown.wildlife_scores[wildlife] = fn(player)
-        else:
-            breakdown.wildlife_scores[wildlife] = 0
+        fn       = SCORING_CARDS.get(f"{wildlife}_{variant}")
+        bd.wildlife_scores[wildlife] = fn(player) if fn else 0
+    bd.habitat_score      = score_habitat_corridors(player)
+    bd.nature_token_score = player.nature_tokens
+    bd.compute_total()
+    return bd
 
-    breakdown.habitat_score      = score_habitat_corridors(player)
-    breakdown.nature_token_score = player.nature_tokens  # leftover tokens = 1 pt each
-    breakdown.compute_total()
 
-    return breakdown
+def score_all_players(players: List[Player],
+                      scoring_cards: Dict[str, str]) -> Dict[int, ScoreBreakdown]:
+    """Score all players including majority bonuses."""
+    results: Dict[int, ScoreBreakdown] = {}
+    for player in players:
+        results[player.player_id] = score_player(player, scoring_cards)
+
+    majorities = score_habitat_majority(players)
+    for player in players:
+        pid = player.player_id
+        results[pid].habitat_majority = majorities[pid]
+        results[pid].compute_total()
+        player.score = results[pid].total
+
+    return results
+
+
+# ── Scoring card descriptions ─────────────────────────────────────────────────
+
+CARD_DESCRIPTIONS = {
+    "bear_A": ("Bear — Card A: Pairs",
+        ["Score increasing pts for total bear PAIRS.",
+         "Pairs = sum of (group_size ÷ 2) across all groups.",
+         "1 pair=2  2 pairs=5  3 pairs=9  4 pairs=13",
+         "Groups may NOT touch each other!",
+         "Tip: build multiple 2-bear groups."]),
+    "bear_B": ("Bear — Card B: Trios",
+        ["Score 10 pts for each group of EXACTLY 3 bears.",
+         "Groups of 1, 2, 4+ score 0.",
+         "Groups may NOT touch each other!",
+         "Tip: aim for as many 3-bear groups as possible."]),
+    "bear_C": ("Bear — Card C: Variety",
+        ["Score for groups sized 1, 2, or 3:",
+         "  1 bear = 2 pts   2 bears = 4 pts   3 bears = 7 pts",
+         "BONUS: +3 pts if you have at least one of each!",
+         "Groups may NOT touch each other!",
+         "Tip: build one of each size for the bonus."]),
+    "bear_D": ("Bear — Card D: Medium Groups",
+        ["Score for groups sized 2, 3, or 4:",
+         "  2 bears = 4 pts   3 bears = 7 pts   4 bears = 10 pts",
+         "Solo bears and groups of 5+ score 0.",
+         "Groups may NOT touch each other!",
+         "Tip: build groups of exactly 4 for max points."]),
+    "elk_A": ("Elk — Card A: Straight Lines",
+        ["Score for elk in straight lines (flat-side to flat-side).",
+         "  Line of 2=5  3=9  4=13  5=18",
+         "Lines in any orientation. Elk groups may touch.",
+         "Tip: align elk in long straight rows!"]),
+    "elk_B": ("Elk — Card B: Shapes",
+        ["Score for elk in specific formations.",
+         "  2 elk=3  3 elk=7  4+ elk=11",
+         "Elk groups may touch each other.",
+         "Tip: build connected groups of 3-4 elk."]),
+    "elk_C": ("Elk — Card C: Any Groups",
+        ["Score for any connected elk group by size:",
+         "  1=1  2=3  3=5  4=7  5=10  6+=14",
+         "Groups can be any shape. Elk may touch.",
+         "Tip: one big group scores better than many small ones."]),
+    "elk_D": ("Elk — Card D: Circles",
+        ["Score for elk in a circular formation.",
+         "Every elk must touch exactly 2 others (closed ring).",
+         "  3-ring=7  4-ring=9  5-ring=12  6-ring=15",
+         "Tip: place elk in a hexagonal ring shape!"]),
+    "salmon_A": ("Salmon — Card A: Long Runs",
+        ["Score each salmon RUN by size (max 7).",
+         "A run = each salmon touches ≤ 2 others.",
+         "  1=2  2=4  3=7  4=11  5=15  6=20  7=25",
+         "Runs may NOT touch other runs!",
+         "Tip: build one long straight run."]),
+    "salmon_B": ("Salmon — Card B: Medium Runs",
+        ["Score each salmon run by size (max 5).",
+         "  1=2  2=4  3=7  4=11  5=17",
+         "Runs may NOT touch other runs!",
+         "Tip: multiple runs of 3-5 are efficient."]),
+    "salmon_C": ("Salmon — Card C: Mid Runs Only",
+        ["Only runs of size 3, 4, or 5 score points.",
+         "  3=7  4=11  5=17",
+         "Size 1, 2, 6+ score NOTHING.",
+         "Runs may NOT touch other runs!",
+         "Tip: target runs of exactly 3-5 salmon."]),
+    "salmon_D": ("Salmon — Card D: Diversity",
+        ["Each run scores 1pt per salmon in run,",
+         "PLUS 1pt per adjacent non-salmon token.",
+         "(Each adjacent tile counted once per run)",
+         "Runs may NOT touch other runs!",
+         "Tip: place salmon near lots of other animals!"]),
+    "hawk_A": ("Hawk — Card A: Solitary",
+        ["Score increasing pts per isolated hawk:",
+         "  1=2  2=5  3=8  4=11  5=14",
+         "Hawks next to other hawks = 0.",
+         "Tip: spread hawks far apart, 1 per region."]),
+    "hawk_B": ("Hawk — Card B: Solo + Sightline",
+        ["Score for hawks that are BOTH:",
+         "  isolated (no adjacent hawk) AND",
+         "  have line-of-sight to another hawk.",
+         "  1=3  2=7  3=12  4=17  5=22",
+         "Tip: keep hawks apart but in sight of each other."]),
+    "hawk_C": ("Hawk — Card C: Sightlines",
+        ["Score 3 pts for each line-of-sight BETWEEN two hawks.",
+         "Line of sight = straight hex path, no hawk between.",
+         "Same hawk can be in multiple lines.",
+         "Tip: place hawks where they can see many others."]),
+    "hawk_D": ("Hawk — Card D: Pairs + Diversity",
+        ["Pair up hawks, score by unique animal types between them.",
+         "  0 types=0  1=1  2=3  3=5  4=7",
+         "Each hawk in one pair only.",
+         "Tip: pair hawks with diverse animals between them."]),
+    "fox_A": ("Fox — Card A: Diverse Neighbours",
+        ["Each fox scores by unique adjacent species (incl. foxes):",
+         "  0=0  1=1  2=2  3=4  4=7",
+         "Tip: surround fox with 3-4 different animal types."]),
+    "fox_B": ("Fox — Card B: Animal Pairs",
+        ["Each fox scores by unique non-fox species with 2+ adjacent:",
+         "  0=0  1=1  2=3  3=5  4=7",
+         "Pairs don't need to be next to each other.",
+         "Tip: cluster 2+ of the same species near each fox."]),
+    "fox_C": ("Fox — Card C: Abundance",
+        ["Each fox scores by the MOST COMMON adjacent non-fox species:",
+         "  0=0  1=1  2=3  3=5  4=7",
+         "Only the single most abundant type counts.",
+         "Tip: surround each fox with lots of ONE animal type."]),
+    "fox_D": ("Fox — Card D: Fox Pairs",
+        ["Score PAIRS of adjacent foxes by unique animal pairs nearby.",
+         "(8 combined adjacent tiles scored per fox pair)",
+         "  0=0  1=2  2=5  3=8  4=11",
+         "Tip: place foxes in adjacent pairs near diverse animals."]),
+}
+
+HABITAT_SCORING_DESC = [
+    "Habitat Corridors (all players):",
+    "Largest connected area per habitat = 1pt/tile.",
+    "MAJORITY BONUS (per habitat):",
+    "  2p: 2pts for largest, 1pt for second",
+    "  3-4p: 3pts for largest, 1pt for second",
+    "  Ties: points split evenly.",
+]

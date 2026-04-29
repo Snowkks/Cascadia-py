@@ -55,6 +55,7 @@ def init_db():
                 hawk_score      INTEGER NOT NULL,
                 fox_score       INTEGER NOT NULL,
                 habitat_score   INTEGER NOT NULL,
+                habitat_majority INTEGER NOT NULL DEFAULT 0,
                 nature_tokens   INTEGER NOT NULL,
                 is_winner       INTEGER NOT NULL
             );
@@ -101,18 +102,14 @@ def save_game_result(
                 """INSERT INTO player_results
                    (game_id, player_name, total_score,
                     bear_score, elk_score, salmon_score, hawk_score, fox_score,
-                    habitat_score, nature_tokens, is_winner)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    habitat_score, habitat_majority, nature_tokens, is_winner)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    game_id,
-                    player.name,
-                    player.score,
-                    ws.get("bear", 0),
-                    ws.get("elk", 0),
-                    ws.get("salmon", 0),
-                    ws.get("hawk", 0),
-                    ws.get("fox", 0),
+                    game_id, player.name, player.score,
+                    ws.get("bear",0), ws.get("elk",0), ws.get("salmon",0),
+                    ws.get("hawk",0), ws.get("fox",0),
                     bd.habitat_score if bd else 0,
+                    bd.habitat_majority if bd else 0,
                     player.nature_tokens,
                     1 if player.player_id == winner.player_id else 0,
                 ),

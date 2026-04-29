@@ -314,11 +314,17 @@ class HexCell:
             surface.blit(s, (sq_x + 13, y))
 
     def _draw_dual(self, surface):
-        """Tint the right half of the hex with the second habitat colour."""
+        """Tint half the hex with second habitat colour, rotated by tile.rotation."""
         h2 = COLORS.get(self.tile.habitats[1], (192, 192, 192))
         corners = hex_corners(self.cx, self.cy, self.size)
-        right = [corners[5], corners[0], corners[1], corners[2], (self.cx, self.cy)]
-        pygame.draw.polygon(surface, h2, [(int(x), int(y)) for x, y in right])
+        rot = getattr(self.tile, 'rotation', 0)
+        # Rotate corner indices so the split direction changes with rotation
+        c = corners
+        # Pick 3 consecutive corners offset by rotation to define the "right half"
+        i0 = rot % 6
+        right_corners = [c[i0 % 6], c[(i0+1) % 6], c[(i0+2) % 6], (self.cx, self.cy)]
+        pygame.draw.polygon(surface, h2,
+                            [(int(x), int(y)) for x, y in right_corners])
         pygame.draw.polygon(surface, (0, 0, 0),
                             [(int(x), int(y)) for x, y in corners], 1)
 
