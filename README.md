@@ -1,6 +1,6 @@
 # Cascadia – Digital Board Game
 
-A faithful Python/Pygame recreation of the award-winning **Cascadia** board game
+A Python/Pygame recreation of the **Cascadia** board game
 (designed by Randy Flynn), featuring hex-tile drafting, wildlife token placement,
 and multiple scoring card variants.
 
@@ -34,6 +34,12 @@ python main.py
 ```bash
 conda env create -f environment.yml
 conda activate cascadia
+python main.py
+```
+
+### Option C - NixOS(Linux)
+```bash
+nix develop
 python main.py
 ```
 
@@ -74,6 +80,7 @@ cascadia/
 │       ├── app.py               ← Main loop & screen router
 │       ├── resources.py         ← Font loading
 │       ├── widgets.py           ← Reusable UI widgets
+│       ├── ui.py                ← Win98-style base widgets & ConfirmPopup
 │       ├── screen_menu.py       ← Main menu
 │       ├── screen_setup.py      ← New game / player setup
 │       ├── screen_game.py       ← Main gameplay screen
@@ -95,34 +102,37 @@ landscape tiles and placing wildlife tokens to satisfy scoring cards.
 
 1. **Choose a pair** – Select one of the 4 face-up tile/token pairs from the Market.
 2. **Place your tile** – Click a green ghost hex on your board to place it
-   (must be adjacent to an existing tile).
+   (must be adjacent to an existing tile). Press **R** to rotate, **Shift+R** to rotate the other way.
 3. **Place your token** – Click a highlighted tile on your board that accepts
-   your token. Or click **Discard Token** to sacrifice it and gain a 🌲 Nature Token.
+   your token. Or click **Discard Token** to return it to the bag.
 
-### Nature Tokens 🌲
+### Nature Tokens
 Spend a nature token (before selecting a pair) for one of two special actions:
 - **Replace Tokens** – Discard all 4 market tokens and draw fresh ones.
 - **Free Pick** – Take a tile from any slot and a token from any *other* slot.
 
+Nature tokens are also earned by placing a matching wildlife token on a **Keystone tile**
+(marked with a yellow dot). Each leftover nature token scores 1 point at the end.
+
 ### Overpopulation
-If 3 or more of the same token type appear in the market simultaneously,
-they are automatically returned to the deck and replaced.
+- **4 of the same** token type in the market → automatically wiped and redrawn.
+- **3 of the same** token type → a popup appears asking if you want to wipe them (optional, once per turn).
 
 ### Scoring
 After all turns are taken, points are counted:
 
 | Category     | Rule |
 |--------------|------|
-| **Bear**     | Groups of 1/2/3 bears (or other variant) |
-| **Elk**      | Longest run / paired adjacency |
+| **Bear**     | Groups of bears scored by size (variant A/B/C/D) |
+| **Elk**      | Longest straight run / paired adjacency |
 | **Salmon**   | Largest connected group / isolated fish |
-| **Hawk**     | Isolated hawks / adjacency bonus |
-| **Fox**      | Unique neighbour species / total neighbours |
-| **Habitats** | Largest contiguous corridor of each type |
-| **Nature 🌲** | 1 pt per leftover nature token |
+| **Hawk**     | Isolated hawks score points; adjacent hawks score 0 |
+| **Fox**      | Points based on unique neighbouring species |
+| **Habitats** | Largest contiguous corridor of each terrain type |
+| **Nature**   | 1 pt per leftover nature token |
 
-Each wildlife species has an **A** or **B** scoring card randomly selected at
-game start (shown in the left panel during play).
+Each wildlife species uses one scoring card (A, B, C or D) randomly selected at
+game start — shown in the left panel during play.
 
 ### Winning
 The player with the most total points wins. Ties are broken by most nature tokens remaining.
@@ -136,6 +146,10 @@ The player with the most total points wins. Ties are broken by most nature token
 | Left-click market | Select tile/token pair |
 | Left-click board | Place tile or token |
 | Right-click + drag | Pan the board |
+| R | Rotate selected tile clockwise |
+| Shift + R | Rotate selected tile counter-clockwise |
+| Mouse wheel (on board) | Rotate selected tile |
+| `[` / `]` | Switch between viewing player boards |
 | ESC | Return to menu |
 | Mouse wheel (log) | Scroll event log |
 
@@ -149,10 +163,3 @@ View the **Leaderboard** screen from the main menu to see:
 - Full score breakdown for each completed game
 
 ---
-
-## Notes for Developers
-
-- `game_engine.py` is pure Python with no Pygame dependency – unit-testable independently.
-- `scoring.py` is similarly GUI-free and can be imported standalone.
-- All colours and sizes live in `constants.py` for easy theming.
-- The DB schema is created automatically on first run via `database.init_db()`.
