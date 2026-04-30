@@ -74,6 +74,10 @@ class GameEngine:
         # Rotation of the selected tile (0-5)
         self.tile_rotation: int = 0
 
+        # Overpopulation state (3-of-same = player choice)
+        self.triple_overpop_type:    Optional[str]      = None
+        self.triple_overpop_indices: List[int]           = []
+
         # Results
         self.scores: Dict[int, ScoreBreakdown] = {}
         self.winners: List[Player] = []
@@ -85,11 +89,9 @@ class GameEngine:
     # ── Setup ─────────────────────────────────────────────────────────────────
 
     def _setup_game(self):
-        # Each player gets exactly 1 starter tile (rulebook p.4)
         for player in self.players:
             tile = build_starter_tile(self.rng)
             player.board[(0, 0)] = tile
-
         self._fill_market()
         self.phase = Phase.SELECT_PAIR
         self._log(f"Game started — {len(self.players)} players.")
@@ -97,34 +99,69 @@ class GameEngine:
                               for w, v in self.scoring_cards.items())
         self._log(f"Scoring cards: {cards_str}")
 
-    def _fill_market(self):
-        for i in range(MARKET_SIZE):
-            if self.market_tiles[i]  is None: self.market_tiles[i]  = self._draw_tile()
-            if self.market_tokens[i] is None: self.market_tokens[i] = self._draw_token()
-        self._check_overpopulation()
-
-    def _draw_tile(self)  -> Optional[HexTile]:
-        return self._tile_deck.pop(0)  if self._tile_deck  else None
+    def _draw_tile(self) -> Optional[HexTile]:
+        return self._tile_deck.pop(0) if self._tile_deck else None
 
     def _draw_token(self) -> Optional[WildlifeToken]:
         return self._token_deck.pop(0) if self._token_deck else None
 
-    def _check_overpopulation(self):
+    def _fill_market(self):
+        for i in range(MARKET_SIZE):
+            if self.market_tiles[i]  is None: self.market_tiles[i]  = self._draw_tile()
+            if self.market_tokens[i] is None: self.market_tokens[i] = self._draw_token()
+        self._auto_overpopulation()
+        self._check_triple_overpopulation()
+
+    def _auto_overpopulation(self):
+        """4 of same type = automatic wipe (can repeat until resolved)."""
         for _ in range(10):
             counts: Dict[str, List[int]] = {}
             for i, tok in enumerate(self.market_tokens):
                 if tok: counts.setdefault(tok.wildlife_type, []).append(i)
-            over = [idx for idx in counts.values() if len(idx) >= OVERPOPULATION_MAX]
-            if not over: break
-            for indices in over:
+            four_plus = [idx for idx in counts.values() if len(idx) >= 4]
+            if not four_plus: break
+            for indices in four_plus:
                 for i in indices:
                     if self.market_tokens[i]:
                         self._token_deck.append(self.market_tokens[i])
                         self.market_tokens[i] = None
-                self._log("Overpopulation — tokens returned to bag.")
+                self._log("All 4 tokens same — auto wiped and redrawn.")
             for i in range(MARKET_SIZE):
                 if self.market_tokens[i] is None:
                     self.market_tokens[i] = self._draw_token()
+
+    def _check_triple_overpopulation(self):
+        """If exactly 3 of same type appear, flag it so UI can offer the player a choice."""
+        counts: Dict[str, List[int]] = {}
+        for i, tok in enumerate(self.market_tokens):
+            if tok: counts.setdefault(tok.wildlife_type, []).append(i)
+        triple = {w: idx for w, idx in counts.items() if len(idx) == 3}
+        if triple:
+            wildlife_type = list(triple.keys())[0]
+            self.triple_overpop_type    = wildlife_type
+            self.triple_overpop_indices = triple[wildlife_type]
+        else:
+            self.triple_overpop_type    = None
+            self.triple_overpop_indices = []
+
+    def wipe_triple_overpopulation(self) -> bool:
+        """
+        Player chooses to wipe 3-of-same tokens.
+        Can only be done once per turn, before SELECT_PAIR.
+        """
+        if self.phase != Phase.SELECT_PAIR: return False
+        if not self.triple_overpop_type:    return False
+        for i in self.triple_overpop_indices:
+            if self.market_tokens[i]:
+                self._token_deck.append(self.market_tokens[i])
+                self.market_tokens[i] = None
+        self._log(f"Player wiped 3× {self.triple_overpop_type} tokens.")
+        for i in range(MARKET_SIZE):
+            if self.market_tokens[i] is None:
+                self.market_tokens[i] = self._draw_token()
+        self._auto_overpopulation()
+        self._check_triple_overpopulation()
+        return True
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -212,7 +249,8 @@ class GameEngine:
             if self.market_tokens[i]:
                 self._token_deck.append(self.market_tokens[i])
             self.market_tokens[i] = self._draw_token()
-        self._check_overpopulation()
+        self._auto_overpopulation()
+        self._check_triple_overpopulation()
         self._log(f"{self.current_player.name} spent a Nature Token — replaced all tokens.")
         return True
 

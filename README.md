@@ -6,7 +6,7 @@ and multiple scoring card variants.
 
 ---
 
-## How to Run
+## Quick Start
 
 ### Option A – pip + venv (recommended)
 
@@ -34,12 +34,6 @@ python main.py
 ```bash
 conda env create -f environment.yml
 conda activate cascadia
-python main.py
-```
-
-### Option C - NIXOS (Linux)
-```bash
-nix develop
 python main.py
 ```
 
@@ -103,9 +97,9 @@ landscape tiles and placing wildlife tokens to satisfy scoring cards.
 2. **Place your tile** – Click a green ghost hex on your board to place it
    (must be adjacent to an existing tile).
 3. **Place your token** – Click a highlighted tile on your board that accepts
-   your token. Or click **Discard Token** to sacrifice it and gain a Nature Token.
+   your token. Or click **Discard Token** to sacrifice it and gain a 🌲 Nature Token.
 
-### Nature Tokens 
+### Nature Tokens 🌲
 Spend a nature token (before selecting a pair) for one of two special actions:
 - **Replace Tokens** – Discard all 4 market tokens and draw fresh ones.
 - **Free Pick** – Take a tile from any slot and a token from any *other* slot.
@@ -125,7 +119,7 @@ After all turns are taken, points are counted:
 | **Hawk**     | Isolated hawks / adjacency bonus |
 | **Fox**      | Unique neighbour species / total neighbours |
 | **Habitats** | Largest contiguous corridor of each type |
-| **Nature** | 1 pt per leftover nature token |
+| **Nature 🌲** | 1 pt per leftover nature token |
 
 Each wildlife species has an **A** or **B** scoring card randomly selected at
 game start (shown in the left panel during play).
@@ -142,7 +136,6 @@ The player with the most total points wins. Ties are broken by most nature token
 | Left-click market | Select tile/token pair |
 | Left-click board | Place tile or token |
 | Right-click + drag | Pan the board |
-| R / Shift+R | Rotate Tile | 
 | ESC | Return to menu |
 | Mouse wheel (log) | Scroll event log |
 
@@ -157,3 +150,9 @@ View the **Leaderboard** screen from the main menu to see:
 
 ---
 
+## Notes for Developers
+
+- `game_engine.py` is pure Python with no Pygame dependency – unit-testable independently.
+- `scoring.py` is similarly GUI-free and can be imported standalone.
+- All colours and sizes live in `constants.py` for easy theming.
+- The DB schema is created automatically on first run via `database.init_db()`.

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 from cascadia.models       import HexTile, WildlifeToken, Player, hex_neighbors
-from cascadia.tile_factory import build_tile_deck, build_token_deck, build_starter_wedge
+from cascadia.tile_factory import build_tile_deck, build_token_deck, build_starter_tile
 from cascadia.scoring      import (
     score_bear_A, score_bear_B,
     score_elk_B,
@@ -125,8 +125,10 @@ class TestPlayer:
 
 class TestTileFactory:
     def test_tile_deck_size(self):
-        deck = build_tile_deck()
-        assert len(deck) >= 80
+        deck = build_tile_deck(num_players=2)
+        assert len(deck) == 43
+        deck4 = build_tile_deck(num_players=4)
+        assert len(deck4) == 83
 
     def test_all_tiles_have_habitats(self):
         for tile in build_tile_deck():
@@ -147,11 +149,11 @@ class TestTileFactory:
         for w in ["bear", "elk", "salmon", "hawk", "fox"]:
             assert counts[w] == 20
 
-    def test_starter_wedge(self):
-        wedge = build_starter_wedge()
-        assert len(wedge) == 3
-        for tile in wedge:
-            assert tile.is_starter is True
+    def test_starter_tile(self):
+        tile = build_starter_tile()
+        assert tile.is_starter is True
+        assert len(tile.habitats) >= 1
+        assert len(tile.accepts) >= 1
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -175,17 +177,17 @@ def _player_with_tokens(positions_and_types):
 class TestBearScoring:
     def test_single_bear(self):
         p = _player_with_tokens([((0, 0), "bear")])
-        assert score_bear_A(p) == 2
+        assert score_bear_A(p) == 0  # 0 pairs = 0 pts
 
     def test_pair_of_bears(self):
         p = _player_with_tokens([((0, 0), "bear"), ((1, 0), "bear")])
-        assert score_bear_A(p) == 5
+        assert score_bear_A(p) == 2  # 1 pair = 2 pts
 
     def test_triple_bears(self):
         p = _player_with_tokens([
             ((0, 0), "bear"), ((1, 0), "bear"), ((1, -1), "bear")
         ])
-        assert score_bear_A(p) == 8
+        assert score_bear_A(p) == 2  # group of 3 = 1 pair = 2 pts
 
     def test_no_bears(self):
         p = Player(0, "Test", (0, 0, 0))
@@ -210,7 +212,7 @@ class TestSalmonScoring:
             t = HexTile(f"T{i}", ["forest"], {wtype})
             p2.add_tile(t, q, r)
             t.token = WildlifeToken(f"tok{i}", wtype)
-        assert score_salmon_B(p2) == 6  # 2 isolated salmon × 3
+        assert score_salmon_B(p2) == 4  # 2 isolated salmon × 2
 
 
 class TestHawkScoring:
@@ -219,7 +221,7 @@ class TestHawkScoring:
         t = HexTile("T0", ["mountain"], {"hawk"})
         p.add_tile(t, 0, 0)
         t.token = WildlifeToken("H0", "hawk")
-        assert score_hawk_A(p) == 5
+        assert score_hawk_A(p) == 2  # 1 isolated hawk = 2 pts
 
     def test_adjacent_hawks_score_0(self):
         p = _player_with_tokens([((0, 0), "hawk"), ((1, 0), "hawk")])
@@ -243,10 +245,10 @@ class TestFoxScoring:
             p.add_tile(t, q, r)
             t.token = WildlifeToken(f"tok{q}{r}", wtype)
 
-        # fox_A: 3 unique adjacent wildlife types
-        assert score_fox_A(p) == 3
-        # fox_B: 3 adjacent tokens
-        assert score_fox_B(p) == 3
+        # fox_A: counts unique neighbour species (fox counts itself = 4 unique types)
+        assert score_fox_A(p) == 4
+        # fox_B: counts species that appear 2+ times adjacent — none here, so 0
+        assert score_fox_B(p) == 0
 
 
 class TestHabitatScoring:
@@ -255,7 +257,7 @@ class TestHabitatScoring:
         t = HexTile("T0", ["forest"], {"bear"})
         p.add_tile(t, 0, 0)
         score = score_habitat_corridors(p)
-        assert score == 0  # single tile = 0 pts
+        assert score == 1  # single tile = 1 pt (size-1 corridor)
 
     def test_two_connected_same_habitat(self):
         p = Player(0, "Test", (0, 0, 0))
@@ -264,7 +266,7 @@ class TestHabitatScoring:
         p.add_tile(t1, 0, 0)
         p.add_tile(t2, 1, 0)
         score = score_habitat_corridors(p)
-        assert score == 1  # corridor of 2 = 1 pt
+        assert score == 2  # corridor of 2 = 2 pts
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -288,7 +290,7 @@ class TestGameEngine:
     def test_starter_tiles(self):
         eng = self._new_engine()
         for p in eng.players:
-            assert len(p.board) == 3
+            assert len(p.board) == 1  # 1 starter tile per player
 
     def test_select_pair_advances_phase(self):
         eng = self._new_engine()
@@ -318,8 +320,8 @@ class TestGameEngine:
         first_player = eng.players[0]
         before_nt = first_player.nature_tokens
         eng.discard_token()
-        # The first player discarded, so they gained 1
-        assert first_player.nature_tokens == before_nt + 1
+        # Discard returns token to bag — no nature token reward (rulebook)
+        assert first_player.nature_tokens == before_nt
 
     def test_full_turn_advances_player(self):
         eng = self._new_engine()

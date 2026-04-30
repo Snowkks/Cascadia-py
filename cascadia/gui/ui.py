@@ -282,3 +282,82 @@ class ScrollList:
             surf.blit(s, (self.rect.x + self.PAD + 2, ry))
 
         surf.set_clip(clip)
+
+
+# ── ConfirmPopup ──────────────────────────────────────────────────────────────
+
+class ConfirmPopup:
+    """
+    Win98-style modal popup with Yes / No buttons.
+    Blocks all other input while visible.
+
+    Usage:
+        popup = ConfirmPopup("Title", "Message?", on_yes=fn)
+        # event loop:  popup.handle(ev)
+        # draw loop:   popup.draw(surf)
+    """
+    W, H = 320, 130
+
+    def __init__(self, title: str, message: str, on_yes=None, on_no=None):
+        self.title   = title
+        self.message = message
+        self.on_yes  = on_yes
+        self.on_no   = on_no
+        self.visible = True
+
+        from cascadia.constants import WINDOW_WIDTH, WINDOW_HEIGHT
+        x = (WINDOW_WIDTH  - self.W) // 2
+        y = (WINDOW_HEIGHT - self.H) // 2
+        self.rect = pygame.Rect(x, y, self.W, self.H)
+
+        bw = 80
+        self._btn_yes = Button(
+            (x + self.W // 2 - bw - 8, y + self.H - 36, bw, 26),
+            "Yes", cb=self._yes)
+        self._btn_no = Button(
+            (x + self.W // 2 + 8,       y + self.H - 36, bw, 26),
+            "No",  cb=self._no)
+
+    def _yes(self):
+        self.visible = False
+        if self.on_yes:
+            self.on_yes()
+
+    def _no(self):
+        self.visible = False
+        if self.on_no:
+            self.on_no()
+
+    def handle(self, ev):
+        if not self.visible:
+            return
+        self._btn_yes.handle(ev)
+        self._btn_no.handle(ev)
+
+    def draw(self, surf):
+        if not self.visible:
+            return
+        # Dim overlay
+        overlay = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 100))
+        surf.blit(overlay, (0, 0))
+
+        # Window background
+        pygame.draw.rect(surf, C["face"], self.rect)
+        bevel(surf, self.rect, raised=True)
+
+        # Title bar
+        tb = pygame.Rect(self.rect.x + 2, self.rect.y + 2, self.rect.w - 4, 22)
+        pygame.draw.rect(surf, C["title"], tb)
+        tf = font(13, bold=True)
+        ts = tf.render(self.title, True, C["title_t"])
+        surf.blit(ts, (tb.x + 6, tb.y + (tb.h - ts.get_height()) // 2))
+
+        # Message
+        mf = font(13)
+        ms = mf.render(self.message, True, C["black"])
+        surf.blit(ms, (self.rect.x + 12, self.rect.y + 36))
+
+        # Buttons
+        self._btn_yes.draw(surf)
+        self._btn_no.draw(surf)

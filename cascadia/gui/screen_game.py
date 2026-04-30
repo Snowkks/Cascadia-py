@@ -21,7 +21,7 @@ from cascadia.constants import (WINDOW_WIDTH as W, WINDOW_HEIGHT as H,
 from cascadia.game_engine import GameEngine, Phase
 from cascadia.scoring import CARD_DESCRIPTIONS, HABITAT_SCORING_DESC
 from cascadia.gui.ui import (C, bevel, title_bar, hrule, txt, font,
-                              Button, ScrollList, panel_box)
+                              Button, ScrollList, panel_box, ConfirmPopup)
 from cascadia.gui.widgets import HexCell
 from cascadia.utils import hex_to_pixel, pixel_to_hex
 
@@ -81,7 +81,11 @@ class GameScreen:
         self._f_sm  = font(11)
 
         # Board viewer — which player's board we're looking at
-        self._view_idx = 0          # index into engine.players
+        self._view_idx = 0
+
+        # Keystone bonus flash notification
+        self._keystone_flash_timer = 0   # counts down in ms
+        self._keystone_flash_name  = ""  # player who got it          # index into engine.players
 
         # Board pan
         self._ox = self._oy = 0
@@ -126,6 +130,13 @@ class GameScreen:
         rot_cx = BX + BW // 2
         self._btn_rot_ccw = Button((rot_cx - 80, rot_y, 70, 28), "↺ Rotate", self._do_rot_ccw, 13)
         self._btn_rot_cw  = Button((rot_cx + 10, rot_y, 70, 28), "↻ Rotate", self._do_rot_cw,  13)
+
+        # Triple overpopulation — handled by popup, not a button
+        self._wipe_popup = None       # ConfirmPopup instance or None
+        self._wipe_dismissed = False   # True once player clicked No this turn
+
+        # btn_wipe3 replaced by popup — dummy button kept so nothing breaks
+        self._btn_wipe3 = Button((-999, -999, 1, 1), "", None, 12)
 
         # Board viewer buttons (left panel, below players)
         self._btn_prev = Button((6,        0, 34, 24), "<", self._prev_board, 13, True)
@@ -188,12 +199,45 @@ class GameScreen:
     def _do_rot_ccw(self):
         self._eng.rotate_selected_tile(clockwise=False)
 
+    def _do_wipe3(self):
+        wtype = self._eng.triple_overpop_type
+        self._wipe_popup = ConfirmPopup(
+            "Overpopulation",
+            f"3x {wtype} in market — wipe them? (optional)",
+            on_yes=self._confirm_wipe3,
+            on_no=self._dismiss_wipe3,
+        )
+
+    def _confirm_wipe3(self):
+        self._eng.wipe_triple_overpopulation()
+        self._sync_log()
+        self._wipe_popup = None
+        self._wipe_dismissed = False
+
+    def _dismiss_wipe3(self):
+        self._wipe_popup = None
+        self._wipe_dismissed = True
+
     # ── Events ────────────────────────────────────────────────────────────────
     def handle_event(self, ev):
+        # Modal popup blocks all other input
+        if self._wipe_popup and self._wipe_popup.visible:
+            self._wipe_popup.handle(ev)
+            return
+
+        # Reset dismissed flag when a new turn's SELECT_PAIR phase begins
+        if self._eng.phase != Phase.SELECT_PAIR:
+            self._wipe_dismissed = False
+
         # Always allow menu button
         self._btn_menu.handle(ev)
 
         if self._eng.is_game_over():
+            # Handle tab switching on game over screen
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                for i, tr in enumerate(getattr(self, '_go_tab_rects', [])):
+                    if tr.collidepoint(ev.pos):
+                        self._go_tab = i
             if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                 self._on_menu()
             return
@@ -227,9 +271,16 @@ class GameScreen:
         self._btn_discard.enabled  = (phase == Phase.PLACE_TOKEN)
         self._btn_nat_rep.enabled  = (phase == Phase.SELECT_PAIR and nt)
         self._btn_nat_pick.enabled = (phase == Phase.SELECT_PAIR and nt)
+        # Auto-show popup when 3-of-same appears in market (once per turn)
+        if (phase == Phase.SELECT_PAIR and
+                self._eng.triple_overpop_type and
+                not self._wipe_dismissed and
+                (self._wipe_popup is None or not self._wipe_popup.visible)):
+            self._do_wipe3()
         self._btn_discard.handle(ev)
         self._btn_nat_rep.handle(ev)
         self._btn_nat_pick.handle(ev)
+        self._btn_wipe3.handle(ev)
 
         # Card hover detection (left panel scoring card rows)
         if ev.type == pygame.MOUSEMOTION:
@@ -315,15 +366,29 @@ class GameScreen:
                 return
             if self._in_board(mx, my):
                 q, r = self._p2b(mx, my)
+                nt_before = eng.current_player.nature_tokens
                 if eng.place_token(q, r):
+                    # Check if keystone bonus fired
+                    if eng.players[self._eng.players[self._eng.current_idx - 1].player_id
+                                   if not eng.is_game_over() else 0].nature_tokens > nt_before:
+                        pass  # handled below via log scan
                     self._sync_log()
+                    # Flash if keystone bonus appeared in log
+                    for msg in reversed(eng.log[-3:]):
+                        if "Keystone bonus" in msg:
+                            self._keystone_flash_timer = 2500
+                            self._keystone_flash_name  = msg
+                            break
                     if eng.is_game_over():
                         self._on_game_over(eng)
                     else:
                         self._sync_view()
 
     # ── Update / Draw ─────────────────────────────────────────────────────────
-    def update(self): pass
+    def update(self):
+        # Tick down keystone flash notification
+        if self._keystone_flash_timer > 0:
+            self._keystone_flash_timer -= 1000 // 60  # ~60fps
 
     def draw(self, surf):
         surf.fill(C["face"])
@@ -343,8 +408,16 @@ class GameScreen:
         if self._card_hover:
             self._draw_card_popup(surf, self._card_hover)
 
+        # Keystone bonus flash notification
+        if self._keystone_flash_timer > 0:
+            self._draw_keystone_flash(surf)
+
         if self._eng.is_game_over():
             self._draw_gameover(surf)
+
+        # Overpopulation popup drawn last (on top of everything)
+        if self._wipe_popup and self._wipe_popup.visible:
+            self._wipe_popup.draw(surf)
 
     # ── Title bar ─────────────────────────────────────────────────────────────
     def _draw_title(self, surf):
@@ -448,7 +521,9 @@ class GameScreen:
             if badge_str:
                 txt(surf, badge_str, self._f_sm, (255,220,80) if is_cur else (0,100,0),
                     33, y+14)
-            txt(surf, f"Nature: {p.nature_tokens}", self._f_sm, sc, 33, y+28)
+            # Nature token — show gold if >1 so it's noticeable
+            nt_col = (200, 160, 0) if p.nature_tokens > 1 else sc
+            txt(surf, f"Nature tokens: {p.nature_tokens}", self._f_sm, nt_col, 33, y+28)
 
             # Wildlife counts
             tx = 33
@@ -470,21 +545,6 @@ class GameScreen:
         cx = LW // 2
         txt(surf, f"Viewing: {viewer.name}", self._f_sm, C["black"], cx, bvy+4, cx=True)
         y = bvy + 32
-
-        hrule(surf, y, 4, LW-4); y += 6
-
-        # Wildlife legend
-        txt(surf, "Tile legend:", self._f_sm, C["muted"], 6, y); y += 14
-        for w, col in W_COLORS.items():
-            pygame.draw.rect(surf, col,        (8,  y+2, 10, 10))
-            pygame.draw.rect(surf, C["black"], (8,  y+2, 10, 10), 1)
-            txt(surf, f"= {w.capitalize()}", self._f_sm, C["black"], 22, y+1)
-            y += 14
-        # Yellow dot
-        pygame.draw.circle(surf, (255,215,0), (13, y+6), 5)
-        pygame.draw.circle(surf, C["black"],  (13, y+6), 5, 1)
-        txt(surf, "= Keystone (1 animal)", self._f_sm, C["black"], 22, y+1)
-        y += 16
 
         self._btn_menu.draw(surf)
 
@@ -563,11 +623,14 @@ class GameScreen:
         txt(surf, "Market", self._f_hdr, C["black"], RX+RW//2, TH+8, cx=True)
         hrule(surf, TH+26, RX+4, W-4)
 
+        # Overpopulation notice removed from sidebar — handled by popup now
+        market_offset = 0
+
         for i in range(MARKET_SIZE):
             tile = eng.market_tiles[i]
             tok  = eng.market_tokens[i]
-            tr   = self._mk_tile_rects[i]
-            kr   = self._mk_tok_rects[i]
+            tr   = self._mk_tile_rects[i].move(0, market_offset)
+            kr   = self._mk_tok_rects[i].move(0, market_offset)
             hov  = (self._hov_market == i and phase == Phase.SELECT_PAIR)
             nat_t = (self._nat_mode and self._nat_tile_idx == i)
 
@@ -606,7 +669,7 @@ class GameScreen:
             pygame.draw.line(surf, (140,160,220), (r.x, r.y),        (r.x, r.bottom-2))
             pygame.draw.line(surf, (40, 50, 100), (r.x, r.bottom-1), (r.right-1,r.bottom-1))
             pygame.draw.line(surf, (40, 50, 100), (r.right-1,r.y),   (r.right-1,r.bottom-1))
-            s = font(13,True).render("Return Token to Bag", True, (255,255,255))
+            s = font(13,True).render("Return Token to Bag  (no penalty)", True, (255,255,255))
             surf.blit(s, (r.x+(r.w-s.get_width())//2, r.y+(r.h-s.get_height())//2))
 
         elif phase == Phase.SELECT_PAIR and eng.current_player.nature_tokens > 0:
@@ -703,55 +766,133 @@ class GameScreen:
             surf.blit(ls, (px+6, cy))
             cy += lh
 
+    # ── Keystone flash notification ───────────────────────────────────────────
+
+    def _draw_keystone_flash(self, surf):
+        """Show a golden popup briefly when keystone bonus fires."""
+        f_big = font(18, bold=True)
+        f_sm  = font(13)
+
+        nw, nh = 340, 70
+        nx = BCX - nw // 2
+        ny = TH + 40
+
+        # Fade alpha based on remaining timer
+        alpha = min(255, self._keystone_flash_timer * 2)
+
+        box_surf = pygame.Surface((nw, nh), pygame.SRCALPHA)
+        pygame.draw.rect(box_surf, (255, 220, 50, min(alpha, 230)), (0, 0, nw, nh))
+        pygame.draw.rect(box_surf, (180, 140, 0, 255), (0, 0, nw, nh), 3)
+        surf.blit(box_surf, (nx, ny))
+
+        # Star + text
+        pygame.draw.circle(surf, (255,215,0), (nx+28, ny+nh//2), 16)
+        pygame.draw.circle(surf, (180,140,0), (nx+28, ny+nh//2), 16, 2)
+        star = f_big.render("★", True, (180,100,0))
+        surf.blit(star, (nx+28-star.get_width()//2, ny+nh//2-star.get_height()//2))
+
+        s1 = f_big.render("Keystone Bonus!", True, (120, 70, 0))
+        s2 = f_sm.render("+1 Nature Token earned", True, (100, 60, 0))
+        surf.blit(s1, (nx+52, ny+10))
+        surf.blit(s2, (nx+52, ny+34))
+
     # ── Game over screen ──────────────────────────────────────────────────────
     def _draw_gameover(self, surf):
-        # Full-screen dim
+        # Dim background
         dim = pygame.Surface((W, H), pygame.SRCALPHA)
-        dim.fill((0, 0, 0, 160))
+        dim.fill((0, 0, 0, 170))
         surf.blit(dim, (0, 0))
 
-        # Results window
-        MW, MH = 700, 520
+        MW, MH = 760, 540
         mx = (W - MW) // 2
         my = (H - MH) // 2
         panel_box(surf, pygame.Rect(mx, my, MW, MH))
         title_bar(surf, pygame.Rect(mx+2, my+2, MW-4, TH),
                   "Game Over — Final Scores", self._f_hdr)
 
-        y = my + 2 + TH + 10
+        # Tab state — stored on self so clicks persist
+        if not hasattr(self, '_go_tab'): self._go_tab = 0
+        tab_y = my + 2 + TH + 4
 
-        sorted_p = sorted(self._eng.players, key=lambda p: -p.score)
+        # Draw tab buttons inline
+        tab_labels = ["Score Table", "Scoring Cards Explained"]
+        tab_rects  = []
+        tx = mx + 8
+        for i, lbl in enumerate(tab_labels):
+            tr = pygame.Rect(tx, tab_y, 200 if i==1 else 110, 24)
+            tab_rects.append(tr)
+            pygame.draw.rect(surf, C["face"], tr)
+            bevel(surf, tr, raised=(i != self._go_tab))
+            fc = font(12, bold=(i==self._go_tab))
+            s  = fc.render(lbl, True, C["black"])
+            surf.blit(s, (tr.x + (tr.w-s.get_width())//2,
+                          tr.y + (tr.h-s.get_height())//2))
+            tx += tr.w + 4
+
+        # Store tab rects for click handling
+        self._go_tab_rects = tab_rects
+
+        content_y = tab_y + 28
+        hrule(surf, content_y, mx+4, mx+MW-4)
+        content_y += 6
+
+        if self._go_tab == 0:
+            self._draw_go_scores(surf, mx, content_y, MW)
+        else:
+            self._draw_go_cards(surf, mx, content_y, MW, MH, my)
+
+    def _draw_go_scores(self, surf, mx, y, MW):
+        eng      = self._eng
+        sorted_p = sorted(eng.players, key=lambda p: -p.score)
         medals   = ["1st", "2nd", "3rd", "4th"]
 
-        # Column headers
-        cols_x = [mx+14, mx+155, mx+210, mx+265, mx+320, mx+375, mx+430, mx+490, mx+545, mx+615]
-        hdrs   = ["Player","Bear","Elk","Salm","Hawk","Fox","Habit","Maj","Nature","TOTAL"]
-        for i, h in enumerate(hdrs):
-            txt(surf, h, self._f_sm, C["muted"], cols_x[i], y)
+        # Winners announcement
+        if len(eng.winners) == 1:
+            w_txt = f"Winner: {eng.winners[0].name} with {eng.winners[0].score} pts!"
+        else:
+            names = " & ".join(w.name for w in eng.winners)
+            w_txt = f"Shared Victory: {names}  ({eng.winners[0].score} pts)"
+        s = font(16, True).render(w_txt, True, (140, 100, 0))
+        surf.blit(s, (mx + MW//2 - s.get_width()//2, y))
+        y += 26
+
+        # Tie-break note if needed
+        if len(eng.winners) < len([p for p in eng.players
+                                    if p.score == eng.winners[0].score]):
+            tb = font(11).render("Tie broken by Nature Tokens", True, C["muted"])
+            surf.blit(tb, (mx + MW//2 - tb.get_width()//2, y))
         y += 18
-        pygame.draw.line(surf, C["gray"], (mx+10, y), (mx+MW-10, y))
-        y += 6
+
+        # Score table
+        # Columns: Player | Bear | Elk | Salm | Hawk | Fox | Habitat | Majority | Nature | TOTAL
+        CX = [mx+16, mx+150, mx+200, mx+252, mx+304, mx+356, mx+408, mx+468, mx+530, mx+598]
+        HDRS = ["Player","Bear","Elk","Salm","Hawk","Fox","Habit","Maj","Nature","TOTAL"]
+        f_h = font(12, True)
+        f_r = font(13)
+        for i, h in enumerate(HDRS):
+            txt(surf, h, f_h, C["muted"], CX[i], y)
+        y += 18
+        pygame.draw.line(surf, C["gray"], (mx+8, y), (mx+MW-8, y))
+        y += 4
 
         for rank, p in enumerate(sorted_p):
-            bd   = self._eng.scores.get(p.player_id)
-            ws   = bd.wildlife_scores if bd else {}
-            is_1 = (rank == 0)
-            # Gold for winners (may be tied)
-            is_winner = p in self._eng.winners
-            row_r = pygame.Rect(mx+4, y-2, MW-8, 22)
-            if is_winner:
-                pygame.draw.rect(surf, (240, 240, 180), row_r)
+            bd = eng.scores.get(p.player_id)
+            ws = bd.wildlife_scores if bd else {}
+            is_win = p in eng.winners
+            row = pygame.Rect(mx+4, y-2, MW-8, 24)
+            if is_win:
+                pygame.draw.rect(surf, (245, 240, 180), row)
+            elif rank % 2:
+                pygame.draw.rect(surf, (235, 235, 228), row)
 
-            pygame.draw.circle(surf, p.color,   (mx+10, y+9), 7)
-            pygame.draw.circle(surf, C["black"], (mx+10, y+9), 7, 1)
-            col = (160, 120, 0) if is_winner else C["black"]
+            pygame.draw.circle(surf, p.color,   (mx+9, y+9), 7)
+            pygame.draw.circle(surf, C["black"], (mx+9, y+9), 7, 1)
+            col = (140, 100, 0) if is_win else C["black"]
 
             vals = [
-                f"{medals[rank]} {p.name}",
-                str(ws.get("bear",0)),
-                str(ws.get("elk",0)),
-                str(ws.get("salmon",0)),
-                str(ws.get("hawk",0)),
+                f"{medals[rank]}  {p.name}",
+                str(ws.get("bear",0)),  str(ws.get("elk",0)),
+                str(ws.get("salmon",0)),str(ws.get("hawk",0)),
                 str(ws.get("fox",0)),
                 str(bd.habitat_score if bd else 0),
                 str(bd.habitat_majority if bd else 0),
@@ -759,40 +900,55 @@ class GameScreen:
                 str(p.score),
             ]
             for i2, v in enumerate(vals):
-                f2 = self._f_hdr if i2 == 0 or i2 == 9 else self._f_row
-                txt(surf, v, f2, col, cols_x[i2], y)
-            y += 24
+                f2 = font(13, True) if i2 in (0, 9) else f_r
+                txt(surf, v, f2, col, CX[i2], y)
+            y += 26
 
-        y += 10
-        hrule(surf, y, mx+10, mx+MW-10)
-        y += 10
+        y += 6
+        hrule(surf, y, mx+8, mx+MW-8)
+        y += 8
+        f_sm = font(11)
+        txt(surf, "Habitat: 1pt per tile in largest connected corridor per habitat type.",
+            f_sm, C["muted"], mx+14, y); y += 14
+        txt(surf, "Majority: bonus pts for having the largest (or 2nd) corridor vs other players.",
+            f_sm, C["muted"], mx+14, y); y += 14
+        txt(surf, "Nature: 1pt per leftover Nature Token.  Ties broken by most Nature Tokens.",
+            f_sm, C["muted"], mx+14, y); y += 20
+        txt(surf, "Press ESC or Menu to return to main menu.",
+            font(12), C["muted"], mx+MW//2, y, cx=True)
 
-        # Per-card scoring explanation
-        txt(surf, "How scores were calculated this game:", self._f_hdr, C["black"], mx+14, y)
-        y += 20
-        f_exp = font(11)
-        col_w = (MW - 28) // 5
-        for i, (w, variant) in enumerate(self._eng.scoring_cards.items()):
-            key   = f"{w}_{variant}"
-            info  = CARD_DESCRIPTIONS.get(key, (w, []))
-            ex    = mx + 14 + i * col_w
-            wc    = W_COLORS.get(w, (100,100,100))
-            # Mini coloured header
-            pygame.draw.rect(surf, wc, pygame.Rect(ex, y, col_w-4, 16))
-            ts = f_exp.render(f"{w.capitalize()} ({variant})", True, (255,255,255))
-            surf.blit(ts, (ex+2, y+1))
-            # First 2 description lines
-            info_lines = info[1][:2] if info[1] else []
-            for j, line in enumerate(info_lines):
-                txt(surf, line, f_exp, C["black"], ex, y+18+j*14)
+    def _draw_go_cards(self, surf, mx, y, MW, MH, my):
+        """One card per row — no columns, so nothing overlaps."""
+        f_title = font(13, True)
+        f_body  = font(12)
+        lh      = f_body.get_height() + 2
+        pad     = 10
 
-        y += 70
-        txt(surf, "Habitat score: largest connected area of each type counts.",
-            f_exp, C["muted"], mx+14, y)
-        y += 14
-        txt(surf, "Nature tokens: each leftover token = 1 pt.",
-            f_exp, C["muted"], mx+14, y)
-        y += 20
+        for w, variant in self._eng.scoring_cards.items():
+            key  = f"{w}_{variant}"
+            info = CARD_DESCRIPTIONS.get(key)
+            if not info: continue
+            title_str, lines = info
 
-        txt(surf, "Press ESC or click Menu to return to main menu.",
-            self._f_sm, C["muted"], mx+MW//2, y, cx=True)
+            card_h = 22 + len(lines) * lh + 6
+            if y + card_h > my + MH - 40:
+                break
+
+            # Colour band
+            wc = W_COLORS.get(w, (100,100,100))
+            pygame.draw.rect(surf, wc, pygame.Rect(mx+pad, y, MW-pad*2, 20))
+            pygame.draw.rect(surf, C["black"], pygame.Rect(mx+pad, y, MW-pad*2, 20), 1)
+            ts = f_title.render(title_str, True, (255,255,255))
+            surf.blit(ts, (mx+pad+6, y+2))
+            y += 22
+
+            # Body lines — each on its own row, guaranteed not to overlap
+            for line in lines:
+                txt(surf, line, f_body, C["black"], mx+pad+10, y)
+                y += lh
+            y += 6
+
+        y += 4
+        txt(surf, "Press ESC or Menu to return to main menu.",
+            font(12), C["muted"], mx+MW//2, y, cx=True)
+
