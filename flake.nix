@@ -82,7 +82,6 @@ EOF
             if [ -n "$WAYLAND_DISPLAY" ] && [ -z "$CASCADIA_WAYLAND" ]; then
               export SDL_VIDEODRIVER=x11
               export DISPLAY="''${DISPLAY:-:0}"
-              echo "  [XWayland mode active — SDL_VIDEODRIVER=x11]"
             fi
           '';
         };
